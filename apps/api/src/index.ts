@@ -2400,15 +2400,13 @@ app.post("/api/projects/:id/pulls/:n/review", async (c) => {
 
   if (!syntheticPr) {
     const plan = await getTeamPlan(orgId);
-    if (plan === "free") {
-      const hasByok = await hasValidByokKey(orgId);
-      if (!hasByok) {
-        throw new ApiError(
-          402,
-          "free_byok_only",
-          "Free plan is BYOK-only — add your own API key in team settings or upgrade.",
-        );
-      }
+    const hasByok = await hasValidByokKey(orgId);
+    if (plan === "free" && !hasByok) {
+      throw new ApiError(
+        402,
+        "free_byok_only",
+        "Free plan is BYOK-only — add your own API key in team settings or upgrade.",
+      );
     }
     // Deep reviews are Plus/Pro only. Gate explicitly here with a 403 so the
     // dashboard gets a clear error (webhook/comment triggers downgrade silently
@@ -2418,11 +2416,13 @@ app.post("/api/projects/:id/pulls/:n/review", async (c) => {
     }
     // Preflight the daily quota against the run's depth tier. For agentic runs
     // we reserve the tier's spend ceiling (the agent loop hard-caps spend at
-    // that budget); the static path reserves the weight-unit floor. BYOK runs
-    // skip the hosted quota entirely (handled inside checkQuota).
+    // that budget); the static path reserves the weight-unit floor. A team with
+    // a valid BYOK key runs on its own spend, so bypass the hosted quota.
     const projectedDepth = pickDepthTier(parsed.depth ?? null, null);
     const projectedCost = projectReviewCost(projectedDepth);
-    const quota = await checkQuota(orgId, "pr_review", projectedCost);
+    const quota = await checkQuota(orgId, "pr_review", projectedCost, {
+      billingMode: hasByok ? "byok" : "hosted",
+    });
     if (!quota.allowed) {
       throw new ApiError(
         402,
