@@ -13,6 +13,7 @@
   let name = $state("");
   let repoFullName = $state("");
   let provider = $state("github");
+  let pollingEnabled = $state(false);
   let loading = $state(false);
 
 const PROVIDER_LABEL: Record<string, string> = {
@@ -83,6 +84,7 @@ function onRepoSelect(event: Event) {
           name: name.trim(),
           provider,
           repoFullName: repoFullName.trim(),
+          pollingEnabled,
         }),
       });
       await goto(`/teams/${params.id}`);
@@ -185,6 +187,21 @@ function onRepoSelect(event: Event) {
         <span class="text-xs text-neutral-500">For example, <code>acme/api</code>.</span>
       </label>
     {/if}
+
+    <label class="flex items-start gap-3 text-sm">
+      <input
+        type="checkbox"
+        bind:checked={pollingEnabled}
+        class="mt-0.5 size-4 rounded border-neutral-300 text-brand-600 focus:ring-brand-500 dark:border-neutral-600"
+      />
+      <span>
+        <span class="font-medium">Poll for new pull requests</span>
+        <span class="block text-xs text-neutral-500">
+          Periodically check for open PRs and review new ones automatically — no inbound webhook
+          required. Uses this team's {PROVIDER_LABEL[provider] ?? provider} connection.
+        </span>
+      </span>
+    </label>
 
     <button
       type="submit"

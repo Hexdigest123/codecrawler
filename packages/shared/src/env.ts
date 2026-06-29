@@ -70,17 +70,31 @@ const envSchema = z.object({
   REVIEW_AGENT_MAX_READ_BYTES: asNumber.default(50000),
   REVIEW_INDEX_MAX_BYTES: asNumber.default(30000),
   REVIEW_AGENT_TIMEOUT_MS: asNumber.default(240000),
-  // GitHub App credentials. When GH_APP_ID + GH_APP_PRIVATE_KEY are set, VCS
-  // access for GitHub uses installation tokens minted by the App (production
-  // path). GH_TEST_PAT remains as a local-dev escape hatch only.
-  GH_APP_ID: asString.optional(),
-  GH_APP_PRIVATE_KEY: asString.optional(),
-  GH_APP_CLIENT_ID: asString.optional(),
-  GH_APP_CLIENT_SECRET: asString.optional(),
-  GH_WEBHOOK_SECRET: asString.optional(),
+  // GitHub (github.com) dev/local escape hatch — a personal access token used
+  // to validate the adapter against a real repo when no stored VCS connection
+  // exists yet. Production MUST connect a PAT via team settings instead.
   GH_TEST_PAT: asString.optional(),
+  // Shared webhook secrets per provider (must match the provider's webhook
+  // config). Webhooks are optional now that the poller can discover new PRs.
+  GH_WEBHOOK_SECRET: asString.optional(),
   GITLAB_WEBHOOK_SECRET: asString.optional(),
   GITEA_WEBHOOK_SECRET: asString.optional(),
+  // PR polling. The worker registers a repeatable BullMQ job at this cron.
+  // On each tick it lists open PRs for every project with polling_enabled=true
+  // (and a stored VCS connection) and enqueues a review for any PR whose head
+  // sha hasn't been reviewed yet. Disable by leaving the projects' toggle off.
+  PR_POLL_CRON: asString.default("*/5 * * * *"),
+  // Caps to keep a single poll tick bounded (large fleet safety).
+  PR_POLL_MAX_PROJECTS: asNumber.default(200),
+  PR_POLL_PER_PAGE: asNumber.default(30),
+  // Shared secret protecting the internal /api/internal/poll endpoint that the
+  // worker's scheduler calls on a cron. Must be set in production; when unset
+  // the poll endpoint returns 503 (disabled) and the worker skips the tick.
+  INTERNAL_API_KEY: asString.optional(),
+  // Base URL the worker uses to reach the API for internal calls. Defaults to
+  // PUBLIC_API_URL. In docker-compose the worker reaches the API via the
+  // `api` service name, so override with e.g. http://api:3001.
+  INTERNAL_API_URL: asString.optional(),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;

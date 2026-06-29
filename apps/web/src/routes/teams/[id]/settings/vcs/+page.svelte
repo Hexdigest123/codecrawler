@@ -34,8 +34,6 @@
 
   function kindLabel(kind: string | null | undefined): string {
     if (!kind) return "Token";
-    if (kind === "github_app") return "GitHub App";
-    if (kind === "oauth") return "OAuth";
     return kind;
   }
 
@@ -43,6 +41,13 @@
     if (!iso) return "—";
     const d = new Date(iso);
     return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
+  }
+
+  function baseUrlLabel(provider: string): string | null {
+    if (provider === "gitlab" || provider === "gitea") {
+      return "Base URL";
+    }
+    return null;
   }
 
   let connectionsOverride = $state<VcsConnection[] | null>(null);
@@ -53,7 +58,10 @@
   let baseUrl = $state("");
   let adding = $state(false);
 
-  const showBaseUrl = $derived(provider === "gitea");
+  const showBaseUrl = $derived(provider === "gitlab" || provider === "gitea");
+  const baseUrlPlaceholder = $derived(
+    provider === "gitlab" ? "https://gitlab.example.com" : "https://gitea.example.com",
+  );
   const canSubmit = $derived(
     token.trim().length > 0 && (!showBaseUrl || baseUrl.trim().length > 0),
   );
@@ -99,7 +107,8 @@
     <h1 class="text-2xl font-semibold tracking-tight">VCS connections</h1>
     <p class="mt-1 max-w-2xl text-sm text-neutral-600 dark:text-neutral-400">
       Connect GitHub, GitLab, or Gitea so CodeCrawler can read pull/merge requests and post
-      reviews. Tokens are encrypted at rest and never displayed again after adding.
+      reviews. Tokens are encrypted at rest and never displayed again after adding. With a token
+      connected, completed reviews are posted back to the PR as a comment.
     </p>
   </header>
 
@@ -138,15 +147,18 @@
             required
             bind:value={baseUrl}
             class="input px-3 py-2"
-            placeholder="https://gitea.example.com"
+            placeholder={baseUrlPlaceholder}
           />
-          <span class="text-xs text-neutral-500">The root URL of your self-hosted Gitea instance.</span>
+          <span class="text-xs text-neutral-500">
+            The root URL of your self-hosted {providerLabel(provider)} instance. Leave empty for
+            {provider === "gitlab" ? " gitlab.com" : " the public host"}.
+          </span>
         </label>
       {/if}
 
       <p class="max-w-2xl text-xs text-neutral-500">
-        GitHub connections normally use the GitHub App; for testing you can paste a personal access
-        token. GitLab/Gitea use a personal/team         token.
+        Paste a personal access (PAT) or team token with read access to pull/merge requests. Reviews
+        are posted back to the PR as a comment using this token.
       </p>
 
       <div class="flex items-center gap-4">

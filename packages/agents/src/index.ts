@@ -74,7 +74,7 @@ export interface ReviewInput {
   reviewId?: string;
   profileId?: string;
   /** Origin of the run, surfaced on the review page + used to keep the meter honest. */
-  source?: "webhook" | "manual" | "synthetic" | "comment";
+  source?: "webhook" | "manual" | "synthetic" | "comment" | "poll";
   /**
    * Agentic depth tier for this run. When undefined the tier is resolved from
    * REVIEW_AGENT_MODE (auto → DEFAULT_DEPTH_TIER). "static" selects the legacy
@@ -180,14 +180,18 @@ export async function getReviewGraphDescriptor(opts: {
     review,
     synthesize,
     { key: "POST", label: "Post", role: "fixed", modelBearing: false },
+    { key: "END", label: "End", role: "fixed", modelBearing: false },
   ];
   const edges: GraphEdgeDescriptor[] = [
     { from: "INGEST", to: "INDEX", label: "ok", conditional: true },
+    { from: "INGEST", to: "END", label: "on error", conditional: true },
     { from: "INDEX", to: "PLAN" },
     { from: "PLAN", to: "REVIEW", label: "fan-out · per unit", conditional: true },
     { from: "PLAN", to: "SYNTHESIZE", label: "if 0 units", conditional: true },
+    { from: "PLAN", to: "END", label: "on error", conditional: true },
     { from: "REVIEW", to: "SYNTHESIZE", label: "join" },
     { from: "SYNTHESIZE", to: "POST" },
+    { from: "POST", to: "END" },
   ];
   return { graphType: "pr_review", nodes, edges };
 }
