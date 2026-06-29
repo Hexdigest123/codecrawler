@@ -1,0 +1,32 @@
+{
+  "name": "@codecrawler/api",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "hono": "^4.6.14",
+    "@hono/zod-validator": "^0.4.3",
+    "zod": "^3.24.1",
+    "drizzle-orm": "^0.38.0",
+    "@codecrawler/auth": "workspace:*",
+    "@codecrawler/billing": "workspace:*",
+    "@codecrawler/db": "workspace:*",
+    "@codecrawler/email": "workspace:*",
+    "@codecrawler/shared": "workspace:*",
+    "@codecrawler/ai": "workspace:*",
+    "@codecrawler/quotas": "workspace:*",
+    "@codecrawler/vcs": "workspace:*",
+    "@codecrawler/queue": "workspace:*",
+    "@codecrawler/agents": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0"
+  }
+}
