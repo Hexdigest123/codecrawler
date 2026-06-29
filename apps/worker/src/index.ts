@@ -22,6 +22,8 @@ type PaymentsJobData = { orgId: string };
 const RECONCILE_JOB = "payments:reconcile";
 const PAYMENTS_SYNC_JOB = "payments:sync";
 const RECONCILE_CRON = env.NODE_ENV === "development" ? "0 * * * *" : "0 3 * * *";
+const POLL_JOB = "poll:pull-requests";
+const POLL_CRON = env.PR_POLL_CRON;
 
 const connection = new IORedis(env.REDIS_URL, { maxRetriesPerRequest: null });
 
@@ -279,11 +281,54 @@ async function runReconcile() {
   }
 }
 
+/**
+ * Polling tick: calls the API's internal /api/internal/poll endpoint, which
+ * lists open PRs for every project with polling_enabled=true and enqueues a
+ * review for any whose head sha hasn't been reviewed yet. The auth + enqueue
+ * logic lives in the API (single source of truth); the worker just triggers
+ * it on a cron and surfaces failures. Skipped silently when INTERNAL_API_KEY
+ * is unset (the feature is opt-in).
+ */
+async function runPollTick(): Promise<void> {
+  const apiKey = env.INTERNAL_API_KEY;
+  if (!apiKey) {
+    return;
+  }
+  const baseUrl = (env.INTERNAL_API_URL ?? env.PUBLIC_API_URL).replace(/\/+$/, "");
+  const url = `${baseUrl}/api/internal/poll`;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "x-internal-key": apiKey, "content-type": "application/json" },
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      console.warn(
+        `[worker] poll tick -> ${res.status} ${url}: ${text.slice(0, 200) || res.statusText}`,
+      );
+      return;
+    }
+    const body = (await res.json().catch(() => null)) as {
+      projects?: number;
+      enqueued?: number;
+      skipped?: number;
+      errors?: number;
+    } | null;
+    console.log(
+      `[worker] poll tick: projects=${body?.projects ?? 0} enqueued=${body?.enqueued ?? 0} skipped=${body?.skipped ?? 0} errors=${body?.errors ?? 0}`,
+    );
+  } catch (err) {
+    console.warn(`[worker] poll tick failed (${url})`, err instanceof Error ? err.message : err);
+  }
+}
+
 const scheduledWorker = new Worker(
   QUEUE_NAMES.scheduled,
   async (job) => {
     if (job.name === RECONCILE_JOB) {
       await runReconcile();
+    } else if (job.name === POLL_JOB) {
+      await runPollTick();
     }
   },
   { connection: connection as never, concurrency: 1 },
@@ -296,7 +341,7 @@ scheduledWorker.on("failed", (job, err) => {
 async function registerScheduledJobs() {
   const existing = await scheduledQueue.getRepeatableJobs();
   for (const r of existing) {
-    if (r.name === RECONCILE_JOB) {
+    if (r.name === RECONCILE_JOB || r.name === POLL_JOB) {
       await scheduledQueue.removeRepeatableByKey(r.key);
     }
   }
@@ -307,7 +352,16 @@ async function registerScheduledJobs() {
       repeat: { pattern: RECONCILE_CRON, tz: "UTC" },
     },
   );
-  console.log("[worker] scheduled jobs registered");
+  await scheduledQueue.add(
+    POLL_JOB,
+    {},
+    {
+      repeat: { pattern: POLL_CRON, tz: "UTC" },
+    },
+  );
+  console.log(
+    `[worker] scheduled jobs registered (reconcile=${RECONCILE_CRON}, poll=${POLL_CRON})`,
+  );
 }
 
 let shuttingDown = false;

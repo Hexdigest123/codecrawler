@@ -1,6 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { Gitlab } from "@gitbeaker/rest";
-import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
 import { Webhooks } from "@octokit/webhooks";
 
@@ -8,14 +7,11 @@ export interface VcsAuth {
   provider: "github" | "gitlab" | "gitea";
   token: string;
   refreshToken?: string;
-  kind?: "oauth" | "github_app";
-  baseUrl?: string;
   /**
-   * For GitHub App auth: the installation id used to mint the token. When
-   * present, `getVcsProvider` refreshes the token before constructing the
-   * provider so a stale (1h-TTL) token carried through the queue doesn't 401.
+   * Self-hosted base URL for Gitea or GitLab (empty/undefined for github.com
+   * and gitlab.com). GitHub always targets the public api.github.com.
    */
-  installationId?: number;
+  baseUrl?: string;
 }
 
 export interface GhUser {
@@ -225,185 +221,16 @@ export class GitHubProvider implements VCSProvider {
 }
 
 export async function getVcsProvider(auth: VcsAuth): Promise<VCSProvider> {
-  // Refresh GitHub App installation tokens at use-time so a token that aged
-  // out in the queue is replaced before the first API call.
-  let resolvedAuth = auth;
-  if (auth.provider === "github" && auth.kind === "github_app" && auth.installationId) {
-    try {
-      const token = await getGitHubAppInstallationToken(auth.installationId);
-      resolvedAuth = { ...auth, token };
-    } catch (err) {
-      console.warn(
-        `[vcs] github app token refresh failed for installation ${auth.installationId}; falling back to carried token`,
-        err,
-      );
-    }
-  }
-  switch (resolvedAuth.provider) {
+  switch (auth.provider) {
     case "github":
-      return new GitHubProvider(resolvedAuth);
+      return new GitHubProvider(auth);
     case "gitlab":
-      return new GitlabProvider(resolvedAuth);
+      return new GitlabProvider(auth);
     case "gitea":
-      return new GiteaProvider(resolvedAuth);
+      return new GiteaProvider(auth);
     default:
-      throw new Error(`unsupported vcs provider: ${resolvedAuth.provider as string}`);
+      throw new Error(`unsupported vcs provider: ${auth.provider as string}`);
   }
-}
-
-// ----------------------------------------------------------------------------
-// GitHub App auth
-//
-// The production path for GitHub reviews uses a GitHub App: a JWT signed with
-// `GH_APP_PRIVATE_KEY` is exchanged for a per-installation access token (1h
-// TTL), which is then passed to `Octokit` exactly like a PAT. Tokens are
-// cached in-process until ~1 minute before expiry so we don't mint a new one
-// on every request. `GH_TEST_PAT` remains ONLY as a local-dev escape hatch for
-// when the App isn't installed (e.g. trying things out against a personal
-// repo before installing the App).
-// ----------------------------------------------------------------------------
-
-interface GitHubAppConfig {
-  appId?: string;
-  privateKey?: string;
-  clientId?: string;
-  clientSecret?: string;
-}
-
-function readGitHubAppConfig(): GitHubAppConfig {
-  return {
-    appId: process.env.GH_APP_ID,
-    privateKey: process.env.GH_APP_PRIVATE_KEY,
-    clientId: process.env.GH_APP_CLIENT_ID,
-    clientSecret: process.env.GH_APP_CLIENT_SECRET,
-  };
-}
-
-export function hasGitHubAppConfig(): boolean {
-  const c = readGitHubAppConfig();
-  return Boolean(c.appId && c.privateKey);
-}
-
-/** Reformat a private key that may have been stored with literal `\n`. */
-function parsePrivateKey(raw: string): string {
-  if (raw.includes("-----BEGIN")) return raw;
-  return raw.replace(/\\n/g, "\n");
-}
-
-interface CachedInstallationToken {
-  token: string;
-  expiresAt: number; // epoch ms
-}
-
-const installationTokenCache = new Map<number, CachedInstallationToken>();
-const INSTALLATION_TOKEN_TTL_MS = 50 * 60 * 1000; // 50 min (tokens last 60)
-
-function buildAppAuth() {
-  const cfg = readGitHubAppConfig();
-  if (!cfg.appId || !cfg.privateKey) {
-    throw new Error(
-      "GitHub App credentials not configured (GH_APP_ID / GH_APP_PRIVATE_KEY required)",
-    );
-  }
-  return createAppAuth({
-    appId: cfg.appId,
-    privateKey: parsePrivateKey(cfg.privateKey),
-    clientId: cfg.clientId,
-    clientSecret: cfg.clientSecret,
-  });
-}
-
-export async function getGitHubAppInstallationToken(installationId: number): Promise<string> {
-  const cached = installationTokenCache.get(installationId);
-  const now = Date.now();
-  if (cached && cached.expiresAt - 60_000 > now) {
-    return cached.token;
-  }
-  const auth = buildAppAuth();
-  const res = await auth({ type: "installation", installationId });
-  if (!res.token) {
-    throw new Error(`failed to mint installation token for installation ${installationId}`);
-  }
-  let ttl = INSTALLATION_TOKEN_TTL_MS;
-  if (res.expiresAt) {
-    const parsed = Date.parse(res.expiresAt) - now;
-    if (Number.isFinite(parsed) && parsed > 60_000) ttl = parsed;
-  }
-  installationTokenCache.set(installationId, { token: res.token, expiresAt: now + ttl });
-  return res.token;
-}
-
-/**
- * Resolve the GitHub App installation id that owns a given repo, if any.
- * Uses the App JWT (not an installation token). Returns null when the App is
- * not installed on the repo, or when the App config is missing.
- */
-export async function resolveGitHubInstallationForRepo(
-  owner: string,
-  name: string,
-): Promise<number | null> {
-  if (!hasGitHubAppConfig()) return null;
-  try {
-    const auth = buildAppAuth();
-    const { token } = await auth({ type: "app" });
-    const res = await fetch(`https://api.github.com/repos/${owner}/${name}/installation`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-      },
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as { id?: number };
-    return typeof data.id === "number" ? data.id : null;
-  } catch (err) {
-    console.warn(`[vcs] GitHub App installation lookup failed for ${owner}/${name}`, err);
-    return null;
-  }
-}
-
-export interface ResolveGitHubAuthOpts {
-  /** From the webhook payload (`pull_request.installation.id`). */
-  installationId?: number;
-  /** Used to look the installation up when no id is known (manual UI path). */
-  owner?: string;
-  name?: string;
-  /** PAT fallback from vcs_connections, or GH_TEST_PAT for local dev. */
-  fallbackToken?: string;
-}
-
-/**
- * High-level GitHub auth resolver. Tries App → fallbackToken → null, in that
- * order. Callers should treat `null` as "no credentials; reject the run with
- * a clear error".
- */
-export async function resolveGitHubAuth(opts: ResolveGitHubAuthOpts): Promise<VcsAuth | null> {
-  if (opts.installationId !== undefined && hasGitHubAppConfig()) {
-    try {
-      const token = await getGitHubAppInstallationToken(opts.installationId);
-      return { provider: "github", token, kind: "github_app" };
-    } catch (err) {
-      console.warn(`[vcs] installation token mint failed for ${opts.installationId}`, err);
-    }
-  }
-  if (opts.owner && opts.name && hasGitHubAppConfig()) {
-    const installationId = await resolveGitHubInstallationForRepo(opts.owner, opts.name);
-    if (installationId) {
-      try {
-        const token = await getGitHubAppInstallationToken(installationId);
-        return { provider: "github", token, kind: "github_app" };
-      } catch (err) {
-        console.warn(
-          `[vcs] installation token mint failed for ${opts.owner}/${opts.name} (installation ${installationId})`,
-          err,
-        );
-      }
-    }
-  }
-  if (opts.fallbackToken) {
-    return { provider: "github", token: opts.fallbackToken, kind: "oauth" };
-  }
-  return null;
 }
 
 export interface VerifiedWebhook {
@@ -528,7 +355,12 @@ export class GitlabProvider implements VCSProvider {
   private readonly gitlab: Gitlab;
 
   constructor(auth: VcsAuth) {
-    this.gitlab = new Gitlab({ token: auth.token });
+    // GitLab can be self-hosted (GitLab CE/EE on a custom domain). When a
+    // baseUrl is provided, route the gitbeaker client at that instance;
+    // otherwise it defaults to https://gitlab.com.
+    const raw = (auth.baseUrl ?? "").trim();
+    const host = raw.endsWith("/") ? raw.slice(0, -1) : raw;
+    this.gitlab = new Gitlab(host ? { host, token: auth.token } : { token: auth.token });
   }
 
   async getPullRequest(owner: string, repo: string, n: number): Promise<PR> {

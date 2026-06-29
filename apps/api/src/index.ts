@@ -32,7 +32,6 @@ import {
 import type { VcsAuth } from "@codecrawler/vcs";
 import {
   getVcsProvider,
-  resolveGitHubAuth,
   verifyGiteaWebhook,
   verifyGitHubWebhook,
   verifyGitlabWebhook,
@@ -289,6 +288,9 @@ function isPublicApiPath(path: string): boolean {
   if (path === "/api/payments" || path.startsWith("/api/payments/")) return true;
   if (path === "/api/sso/resolve") return true;
   if (path === "/api/signup-config") return true;
+  // Internal endpoints are authenticated via a shared secret header instead
+  // of a user session (called by the worker's poll scheduler).
+  if (path === "/api/internal" || path.startsWith("/api/internal/")) return true;
   return false;
 }
 
@@ -332,6 +334,7 @@ function classifyRoute(method: string, path: string): RouteClass {
   }
   if (path === "/api/webhooks" || path.startsWith("/api/webhooks/")) return "webhook";
   if (path === "/api/payments/webhook") return "webhook";
+  if (path === "/api/internal" || path.startsWith("/api/internal/")) return "webhook";
   return "api";
 }
 
@@ -517,6 +520,7 @@ const createProjectSchema = z.object({
   provider: z.enum(["github", "gitlab", "gitea"]),
   repoFullName: z.string().min(1),
   webhookSecret: z.string().optional(),
+  pollingEnabled: z.boolean().optional(),
 });
 
 const createApiKeySchema = z.object({
@@ -730,13 +734,11 @@ async function getStoredVcsConnection(
   provider: "github" | "gitlab" | "gitea",
 ): Promise<{
   token: string;
-  kind: "oauth" | "github_app";
   baseUrl: string | null;
 } | null> {
   const rows = await db
     .select({
       accessToken: schema.vcsConnections.accessToken,
-      kind: schema.vcsConnections.kind,
       baseUrl: schema.vcsConnections.baseUrl,
     })
     .from(schema.vcsConnections)
@@ -750,7 +752,6 @@ async function getStoredVcsConnection(
   try {
     return {
       token: decryptSecret(conn.accessToken),
-      kind: conn.kind === "github_app" ? "github_app" : "oauth",
       baseUrl: conn.baseUrl ?? null,
     };
   } catch {
@@ -759,45 +760,34 @@ async function getStoredVcsConnection(
 }
 
 /**
- * Resolve VCS auth for a review. Order: GitHub App (when configured) → stored
- * VCS connection (PAT/OAuth) → GH_TEST_PAT (dev escape hatch, GitHub only) →
- * null. GitHub App tokens are short-lived, so we pass `installationId` along
- * in the auth and the worker refreshes the token at use-time.
+ * Resolve VCS auth for a review from the team's stored PAT/OAuth connection
+ * (fallback to GH_TEST_PAT for GitHub local dev). Returns null when no
+ * credentials are configured — callers reject the run with a clear error.
  */
 async function resolveReviewAuth(opts: {
   provider: "github" | "gitlab" | "gitea";
   orgId: string;
   owner: string;
   name: string;
-  installationId?: number;
   synthetic?: boolean;
 }): Promise<VcsAuth | null> {
   if (opts.synthetic) return null;
 
-  if (opts.provider === "github") {
-    const stored = await getStoredVcsConnection(opts.orgId, "github");
-    const storedToken = stored?.kind === "oauth" ? stored.token : undefined;
-    const fallback = storedToken ?? process.env.GH_TEST_PAT ?? undefined;
-    const auth = await resolveGitHubAuth({
-      installationId: opts.installationId,
-      owner: opts.owner,
-      name: opts.name,
-      fallbackToken: fallback,
-    });
-    if (auth && auth.kind === "github_app" && opts.installationId) {
-      auth.installationId = opts.installationId;
-    }
-    return auth;
+  const stored = await getStoredVcsConnection(opts.orgId, opts.provider);
+  if (stored) {
+    return {
+      provider: opts.provider,
+      token: stored.token,
+      baseUrl: stored.baseUrl ?? undefined,
+    };
   }
 
-  const stored = await getStoredVcsConnection(opts.orgId, opts.provider);
-  if (!stored) return null;
-  return {
-    provider: opts.provider,
-    token: stored.token,
-    kind: stored.kind,
-    baseUrl: stored.baseUrl ?? undefined,
-  };
+  // Dev escape hatch: a personal access token in .env for trying the GitHub
+  // adapter before a team has connected a PAT. Never set in production.
+  if (opts.provider === "github" && process.env.GH_TEST_PAT) {
+    return { provider: "github", token: process.env.GH_TEST_PAT };
+  }
+  return null;
 }
 
 /** Best-effort PR metadata prefetch so the pull_requests row is populated
@@ -873,8 +863,7 @@ async function upsertPullAndEnqueueReview(opts: {
   triggerUserId?: string;
   triggerEmail?: string;
   provider?: "github" | "gitlab" | "gitea";
-  installationId?: number;
-  source?: "webhook" | "manual" | "synthetic" | "comment";
+  source?: "webhook" | "manual" | "synthetic" | "comment" | "poll";
   depth?: DepthTier | null;
 }): Promise<string> {
   const provider = opts.provider ?? "github";
@@ -886,7 +875,7 @@ async function upsertPullAndEnqueueReview(opts: {
     | "by_filegroup"
     | "full";
 
-  const source: "webhook" | "manual" | "synthetic" | "comment" =
+  const source: "webhook" | "manual" | "synthetic" | "comment" | "poll" =
     opts.source ?? (opts.syntheticPr ? "synthetic" : "manual");
 
   // Resolve the depth tier + target queue (deep → dedicated reviews:deep queue,
@@ -896,13 +885,13 @@ async function upsertPullAndEnqueueReview(opts: {
     ? { depth: "static" as DepthTier, queueName: QUEUE_NAMES.reviews }
     : await resolveEnqueueDepth(opts.orgId, opts.depth ?? null, opts.profile?.defaultDepth ?? null);
 
-  // Resolve VCS auth now (App → stored connection → dev PAT).
+  // Resolve VCS auth from the team's stored connection (or GH_TEST_PAT for
+  // GitHub local dev).
   const auth = await resolveReviewAuth({
     provider,
     orgId: opts.orgId,
     owner,
     name,
-    installationId: opts.installationId,
     synthetic: Boolean(opts.syntheticPr),
   });
 
@@ -912,7 +901,7 @@ async function upsertPullAndEnqueueReview(opts: {
     throw new ApiError(
       401,
       "vcs_not_authorized",
-      `No GitHub App installation or stored VCS connection for ${opts.orgId}. Install the App or connect a token in team settings.`,
+      `No stored VCS connection for ${opts.orgId}. Connect a token in team settings.`,
     );
   }
 
@@ -1004,6 +993,137 @@ async function upsertPullAndEnqueueReview(opts: {
   return review.id;
 }
 
+// ---------------------------------------------------------------------------
+// PR polling tick
+//
+// The worker's scheduler calls POST /api/internal/poll on a cron (default
+// every 5 min). For each project with pollingEnabled=true that has a stored
+// VCS connection, we list open PRs and enqueue a review for any whose head
+// sha hasn't been reviewed yet (or has new commits since the last review).
+// This is an alternative to inbound webhooks — useful for self-hosted VCS
+// behind a firewall or when configuring webhooks isn't possible.
+// ---------------------------------------------------------------------------
+
+/**
+ * Check whether a PR has already been reviewed (or is currently being
+ * reviewed) at this exact head sha. Returns true when a matching review
+ * exists, so the caller can skip re-enqueuing.
+ */
+async function isPullReviewedAtSha(
+  projectId: string,
+  prNumber: number,
+  headSha: string,
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: schema.reviews.id })
+    .from(schema.reviews)
+    .innerJoin(schema.pullRequests, eq(schema.reviews.prId, schema.pullRequests.id))
+    .where(
+      and(
+        eq(schema.pullRequests.projectId, projectId),
+        eq(schema.pullRequests.externalNumber, prNumber),
+        eq(schema.pullRequests.headSha, headSha),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
+async function pollPullRequestsTick(): Promise<{
+  projects: number;
+  enqueued: number;
+  skipped: number;
+  errors: number;
+}> {
+  const projectRows = await db
+    .select({
+      id: schema.projects.id,
+      orgId: schema.projects.orgId,
+      name: schema.projects.name,
+      provider: schema.projects.provider,
+      repoFullName: schema.projects.repoFullName,
+    })
+    .from(schema.projects)
+    .where(eq(schema.projects.pollingEnabled, true))
+    .limit(Math.max(1, env.PR_POLL_MAX_PROJECTS));
+
+  const perPage = Math.max(1, Math.min(100, env.PR_POLL_PER_PAGE));
+  let enqueued = 0;
+  let skipped = 0;
+  let errors = 0;
+
+  for (const project of projectRows) {
+    const provider = (project.provider as "github" | "gitlab" | "gitea" | null) ?? "github";
+    const repoFullName = project.repoFullName ?? "";
+    const [owner, ...rest] = repoFullName.split("/");
+    const repoName = rest.join("/");
+    if (!owner || !repoName) {
+      continue;
+    }
+    const stored = await getStoredVcsConnection(project.orgId, provider);
+    if (!stored) {
+      // Polling is enabled but no PAT is connected — nothing we can do.
+      continue;
+    }
+    try {
+      const vcs = await getVcsProvider({
+        provider,
+        token: stored.token,
+        baseUrl: stored.baseUrl ?? undefined,
+      });
+      const pullRequests = await vcs.listPullRequests(owner, repoName, {
+        state: "open",
+        perPage,
+      });
+      const profile = await resolveOrgProfile(project.orgId, "pr_review");
+      for (const pr of pullRequests) {
+        if (!pr.headSha) {
+          continue;
+        }
+        const seen = await isPullReviewedAtSha(project.id, pr.number, pr.headSha);
+        if (seen) {
+          skipped++;
+          continue;
+        }
+        try {
+          await upsertPullAndEnqueueReview({
+            orgId: project.orgId,
+            projectId: project.id,
+            prNumber: pr.number,
+            repoFullName,
+            profile,
+            provider,
+            source: "poll",
+            prMeta: {
+              title: pr.title,
+              author: pr.author,
+              headSha: pr.headSha,
+              baseSha: pr.baseSha,
+              state: pr.state,
+              htmlUrl: pr.htmlUrl,
+            },
+          });
+          enqueued++;
+        } catch (err) {
+          errors++;
+          console.warn(
+            `[api] poll: enqueue failed for ${repoFullName}#${pr.number}`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
+    } catch (err) {
+      errors++;
+      console.warn(
+        `[api] poll: list PRs failed for ${repoFullName}`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  return { projects: projectRows.length, enqueued, skipped, errors };
+}
+
 const app = new Hono<{ Variables: { user: SessionUser } }>();
 
 app.use("*", logger());
@@ -1061,8 +1181,6 @@ app.post("/api/webhooks/github", async (c) => {
   const action = typeof payload.action === "string" ? payload.action : "";
   const repository = (payload.repository as { full_name?: string } | undefined) ?? undefined;
   const repoFullName = repository?.full_name ?? "";
-  const installation = payload.installation as { id?: number } | undefined;
-  const installationId = typeof installation?.id === "number" ? installation.id : undefined;
 
   const enqueueForRepo = async (
     prNumber: number,
@@ -1095,7 +1213,6 @@ app.post("/api/webhooks/github", async (c) => {
       repoFullName,
       profile,
       provider: "github",
-      installationId,
       source: opts.source ?? "webhook",
       depth: opts.depth,
       prMeta,
@@ -1383,6 +1500,22 @@ app.post("/api/payments/webhook", async (c) => {
   }
 
   return c.json({ status: "ok" });
+});
+
+// Internal endpoint invoked by the worker's poll scheduler. Authenticated via
+// a shared secret (INTERNAL_API_KEY) instead of a user session. Returns a
+// summary of the tick so the worker can log it.
+app.post("/api/internal/poll", async (c) => {
+  const internalKey = process.env.INTERNAL_API_KEY;
+  if (!internalKey) {
+    return jsonError(c, 503, "internal_poll_disabled", "INTERNAL_API_KEY not configured");
+  }
+  const provided = c.req.header("x-internal-key");
+  if (!provided || provided !== internalKey) {
+    return jsonError(c, 401, "unauthorized", "Invalid internal key");
+  }
+  const result = await pollPullRequestsTick();
+  return c.json(result);
 });
 
 app.use("/api/*", async (c, next) => {
@@ -1768,6 +1901,7 @@ app.post(
         provider: body.provider,
         repoFullName: body.repoFullName,
         webhookSecret,
+        pollingEnabled: body.pollingEnabled ?? false,
       })
       .returning();
     return c.json(project, 201);
@@ -2166,6 +2300,7 @@ app.get("/api/teams/:id/vcs-connections", async (c) => {
       kind: schema.vcsConnections.kind,
       externalId: schema.vcsConnections.externalId,
       scopes: schema.vcsConnections.scopes,
+      baseUrl: schema.vcsConnections.baseUrl,
       createdAt: schema.vcsConnections.createdAt,
     })
     .from(schema.vcsConnections)
@@ -2191,7 +2326,6 @@ app.get("/api/teams/:id/vcs-repos", async (c) => {
     const vcs = await getVcsProvider({
       provider,
       token: stored.token,
-      kind: stored.kind,
       baseUrl: stored.baseUrl ?? undefined,
     });
     const items = await vcs.listRepos();
@@ -2306,7 +2440,7 @@ app.get("/api/projects/:id/pulls/open", async (c) => {
     throw new ApiError(
       401,
       "vcs_not_authorized",
-      "No GitHub App installation or stored VCS connection for this team.",
+      "No stored VCS connection for this team. Connect a token in team settings.",
     );
   }
   try {

@@ -158,9 +158,12 @@ Generate strong values for:
 - `TOKEN_ENCRYPTION_KEY` — AES-GCM key for BYOK/VCS tokens
   (`openssl rand -base64 32`). Rotating it invalidates all encrypted tokens.
 - `OPENROUTER_API_KEY` — the platform/hosted metering key.
-- GitHub App: `GH_APP_ID`, `GH_APP_PRIVATE_KEY`, `GH_APP_CLIENT_ID`,
-  `GH_APP_CLIENT_SECRET`, `GH_WEBHOOK_SECRET` (plus `GITLAB_WEBHOOK_SECRET` /
-  `GITEA_WEBHOOK_SECRET` when those providers are in use).
+- `INTERNAL_API_KEY` — shared secret protecting the internal poll endpoint
+  (`openssl rand -hex 32`). Required to enable PR polling.
+- VCS access — teams connect personal access tokens (PAT) per provider in
+  **Settings → VCS**; no GitHub App or server-side PAT needed. Webhook secrets
+  (`GH_WEBHOOK_SECRET`, `GITLAB_WEBHOOK_SECRET`, `GITEA_WEBHOOK_SECRET`) are
+  only required if you rely on inbound webhooks instead of polling.
 - `MOLLIE_API_KEY` — keep the **test** key until go-live, then switch to the
   **live** (`live_...`) key; no code change required.
 
@@ -333,10 +336,10 @@ bun run db:seed
 - `MOLLIE_API_KEY` — swap in the Mollie dashboard, update `.env`, restart;
   old key stays valid until revoked.
 - Webhook secrets (`GH_WEBHOOK_SECRET`, `GITLAB_WEBHOOK_SECRET`,
-  `GITEA_WEBHOOK_SECRET`) — update the secret at the provider AND in `.env`,
-  then restart; mismatches cause webhooks to be rejected (`status: ignored`).
-- GitHub App credentials (`GH_APP_*`) — re-install the App and rotate the PEM;
-  update `.env` and restart.
+  `GITEA_WEBHOOK_SECRET`) — optional. Update the secret at the provider AND in
+  `.env`, then restart; mismatches cause webhooks to be rejected
+  (`status: ignored`). When polling is enabled per-project, webhooks aren't
+  required at all.
 
 Apply any `.env` change with:
 `podman compose -f docker-compose.prod.yml up -d --force-recreate api worker`.
