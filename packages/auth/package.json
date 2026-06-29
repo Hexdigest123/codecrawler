@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@codecrawler/db": "workspace:*",
+    "@codecrawler/email": "workspace:*",
     "@codecrawler/shared": "workspace:*",
     "better-auth": "^1.2.0"
   },

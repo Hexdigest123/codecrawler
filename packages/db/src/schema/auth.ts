@@ -6,6 +6,12 @@ export const user = pgTable("user", {
   email: text("email").notNull(),
   emailVerified: boolean("email_verified").notNull().default(false),
   image: text("image"),
+  // Platform role: "admin" (full Admin dashboard access) or "user".
+  // The first user to sign up is promoted to "admin" automatically.
+  role: text("role").notNull().default("user"),
+  // Account gate driven by Admin → Signups settings.
+  // "active" can sign in; "pending" awaits admin approval; "denied" is blocked.
+  status: text("status").notNull().default("active"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()

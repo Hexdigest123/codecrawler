@@ -4,6 +4,7 @@ import IORedis from "ioredis";
 
 export const QUEUE_NAMES = {
   reviews: "reviews",
+  reviewsDeep: "reviews-deep",
   email: "email",
   webhooks: "webhooks",
   payments: "payments",

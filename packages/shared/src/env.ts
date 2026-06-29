@@ -56,6 +56,20 @@ const envSchema = z.object({
   MAIL_FROM: asString.default("CodeCrawler <noreply@codecrawler.local>"),
   REVIEW_MAX_DIFF_BYTES: asNumber.default(1500000),
   REVIEW_MAX_SLICES: asNumber.default(16),
+  // Agentic review workflow (CodeRabbit-style tool-calling reviewers).
+  // REVIEW_AGENT_MODE gates the feature globally: "off" forces the legacy
+  // static path everywhere; "auto" resolves depth per run from the trigger
+  // (/codecrawler deep), the team's agent_profile.defaultDepth, and the plan
+  // gate; "quick"/"deep" force that tier for every run (deep still plan-gated).
+  REVIEW_AGENT_MODE: z.enum(["off", "auto", "quick", "deep"]).default("off"),
+  REVIEW_AGENT_MAX_STEPS_QUICK: asNumber.default(6),
+  REVIEW_AGENT_MAX_STEPS_DEEP: asNumber.default(12),
+  REVIEW_AGENT_BUDGET_USD_QUICK: asNumber.default(0.5),
+  REVIEW_AGENT_BUDGET_USD_DEEP: asNumber.default(2),
+  REVIEW_AGENT_MAX_TOOL_OUTPUT_BYTES: asNumber.default(20000),
+  REVIEW_AGENT_MAX_READ_BYTES: asNumber.default(50000),
+  REVIEW_INDEX_MAX_BYTES: asNumber.default(30000),
+  REVIEW_AGENT_TIMEOUT_MS: asNumber.default(240000),
   // GitHub App credentials. When GH_APP_ID + GH_APP_PRIVATE_KEY are set, VCS
   // access for GitHub uses installation tokens minted by the App (production
   // path). GH_TEST_PAT remains as a local-dev escape hatch only.

@@ -22,6 +22,20 @@
       "when": 1719500200000,
       "tag": "0002_review_diff_snapshot",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1719500300000,
+      "tag": "0003_admin_and_signup_gates",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1719500400000,
+      "tag": "0004_agent_review_depth",
+      "breakpoints": true
     }
   ]
 }

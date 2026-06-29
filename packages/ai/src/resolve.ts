@@ -1,8 +1,6 @@
-import { db, schema } from "@codecrawler/db";
 import type { BillingMode, PlanId, ProviderId } from "@codecrawler/shared";
-import { env } from "@codecrawler/shared";
-import { eq } from "drizzle-orm";
 import { getValidByokProviders } from "./byok";
+import { findCatalogModelById } from "./catalog";
 import {
   gatewayFromModelId,
   PROVIDER_ID_TO_API_KEY_PROVIDER,
@@ -12,7 +10,6 @@ import {
   saiaWeightForModel,
   stripGatewayPrefix,
 } from "./providers";
-import { computeWeight, minPlanForWeight } from "./weight";
 
 export interface ResolvedModel {
   modelId: string;
@@ -74,22 +71,9 @@ async function resolveSaiaBillingMode(orgId: string): Promise<BillingMode> {
 async function resolveWeightAndPlan(
   modelId: string,
 ): Promise<{ weight: number; displayName: string; minPlan: PlanId }> {
-  const rows = await db
-    .select()
-    .from(schema.modelWeights)
-    .where(eq(schema.modelWeights.openrouterModelId, modelId))
-    .limit(1);
-  if (rows.length > 0) {
-    const row = rows[0];
-    const weight = Number.parseFloat(row.weight) || 1;
-    const displayName = row.displayName ?? modelId;
-    const minPlan = row.minPlan ?? "free";
-    return { weight, displayName, minPlan };
-  }
-  const pricing = await fetchSingleModelPricing(modelId);
-  if (pricing) {
-    const weight = computeWeight(pricing.promptPricePer1k, pricing.completionPricePer1k);
-    return { weight, displayName: modelId, minPlan: minPlanForWeight(weight) };
+  const entry = await findCatalogModelById(modelId);
+  if (entry) {
+    return { weight: entry.weight, displayName: entry.name, minPlan: entry.minPlan };
   }
   return { weight: 1, displayName: modelId, minPlan: "free" };
 }
@@ -105,47 +89,4 @@ async function resolveBillingMode(
     return "byok";
   }
   return "hosted";
-}
-
-interface OpenRouterModel {
-  id?: string;
-  pricing?: { prompt?: string; completion?: string };
-}
-
-interface OpenRouterModelResponse {
-  data?: OpenRouterModel;
-}
-
-async function fetchSingleModelPricing(
-  modelId: string,
-): Promise<{ promptPricePer1k: number; completionPricePer1k: number } | null> {
-  const baseURL = env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1";
-  try {
-    const headers: Record<string, string> = {};
-    if (env.OPENROUTER_API_KEY) {
-      headers.Authorization = `Bearer ${env.OPENROUTER_API_KEY}`;
-    }
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
-    const res = await fetch(`${baseURL}/model/${modelId}`, {
-      headers,
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-    if (!res.ok) return null;
-    const json = (await res.json()) as OpenRouterModelResponse;
-    const data = json.data;
-    if (!data?.pricing) return null;
-    const prompt = num(data.pricing.prompt) * 1000;
-    const completion = num(data.pricing.completion) * 1000;
-    return { promptPricePer1k: prompt, completionPricePer1k: completion };
-  } catch {
-    return null;
-  }
-}
-
-function num(v: string | undefined): number {
-  if (!v) return 0;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
 }
