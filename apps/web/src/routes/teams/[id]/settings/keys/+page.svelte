@@ -1,5 +1,6 @@
 <script lang="ts">
 import { ApiError, api } from "$lib/api";
+import { toastError, toastSuccess } from "$lib/toast.svelte";
 import { API_KEY_PROVIDERS, type ApiKeyRow, type ApiKeyStatus } from "$lib/types";
 import type { PageProps } from "./$types";
 
@@ -11,7 +12,6 @@ let provider = $state<string>(API_KEY_PROVIDERS[0]);
 let label = $state("");
 let key = $state("");
 let adding = $state(false);
-let addError = $state<string | null>(null);
 let busyProvider = $state<string | null>(null);
 
 const statusStyles: Record<ApiKeyStatus, string> = {
@@ -29,7 +29,6 @@ function statusLabel(status: ApiKeyStatus): string {
 async function addKey(event: SubmitEvent) {
   event.preventDefault();
   if (key.trim().length === 0) return;
-  addError = null;
   adding = true;
   try {
     await api(`/api/teams/${data.teamId}/api-keys`, {
@@ -43,8 +42,9 @@ async function addKey(event: SubmitEvent) {
     key = "";
     label = "";
     keysOverride = await api<ApiKeyRow[]>(`/api/teams/${data.teamId}/api-keys`);
+    toastSuccess(`${provider} key added.`);
   } catch (err) {
-    addError = err instanceof ApiError ? err.message : "Could not add key.";
+    toastError(err instanceof ApiError ? err.message : "Could not add key.");
   } finally {
     adding = false;
   }
@@ -53,13 +53,14 @@ async function addKey(event: SubmitEvent) {
 async function verify(targetProvider: string) {
   busyProvider = targetProvider;
   try {
-    await api<{ status: ApiKeyStatus }>(
+    const res = await api<{ status: ApiKeyStatus }>(
       `/api/teams/${data.teamId}/api-keys/${targetProvider}/verify`,
       { method: "POST" },
     );
     keysOverride = await api<ApiKeyRow[]>(`/api/teams/${data.teamId}/api-keys`);
+    toastSuccess(`${targetProvider} key ${res.status === "valid" ? "verified" : "checked"}.`);
   } catch (err) {
-    addError = err instanceof ApiError ? err.message : "Verification failed.";
+    toastError(err instanceof ApiError ? err.message : "Verification failed.");
   } finally {
     busyProvider = null;
   }
@@ -71,8 +72,9 @@ async function removeKey(targetProvider: string) {
   try {
     await api(`/api/teams/${data.teamId}/api-keys/${targetProvider}`, { method: "DELETE" });
     keysOverride = await api<ApiKeyRow[]>(`/api/teams/${data.teamId}/api-keys`);
+    toastSuccess(`${targetProvider} key removed.`);
   } catch (err) {
-    addError = err instanceof ApiError ? err.message : "Could not remove key.";
+    toastError(err instanceof ApiError ? err.message : "Could not remove key.");
   } finally {
     busyProvider = null;
   }
@@ -137,9 +139,6 @@ async function removeKey(targetProvider: string) {
         </button>
       </div>
     </form>
-    {#if addError}
-      <p role="alert" class="mt-3 text-sm text-red-600 dark:text-red-400">{addError}</p>
-    {/if}
   </section>
 
   <section class="rounded-xl border border-neutral-200 p-5 dark:border-neutral-800">

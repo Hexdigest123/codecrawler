@@ -28,6 +28,8 @@ export const coverageStrategyEnum = pgEnum("coverage_strategy", [
 
 export const billingModeEnum = pgEnum("billing_mode", ["hosted", "byok", "mixed"]);
 
+export const reviewDepthEnum = pgEnum("review_depth", ["static", "quick", "deep"]);
+
 export const reviewStatusEnum = pgEnum("review_status", [
   "pending",
   "queued",

@@ -1,20 +1,17 @@
 <script lang="ts">
 import { authClient } from "@codecrawler/auth/client";
 import { ApiError, api } from "$lib/api";
+import { toastError, toastSuccess } from "$lib/toast.svelte";
 import type { PageProps } from "./$types";
 
 let { data }: PageProps = $props();
 
 let newEmail = $state("");
 let emailBusy = $state(false);
-let emailMsg = $state<string | null>(null);
-let emailError = $state<string | null>(null);
 
 let currentPassword = $state("");
 let newPassword = $state("");
 let passwordBusy = $state(false);
-let passwordMsg = $state<string | null>(null);
-let passwordError = $state<string | null>(null);
 
 const emailDisabled = $derived(emailBusy || newEmail.trim().length === 0);
 const passwordDisabled = $derived(
@@ -25,18 +22,16 @@ async function changeEmail(event: SubmitEvent) {
   event.preventDefault();
   if (emailDisabled) return;
   emailBusy = true;
-  emailError = null;
-  emailMsg = null;
   try {
     await api<{ ok: boolean }>("/api/me/email", {
       method: "POST",
       body: JSON.stringify({ newEmail: newEmail.trim() }),
     });
-    emailMsg = `Verification sent to ${newEmail.trim()}. The change takes effect once confirmed.`;
+    toastSuccess(`Verification sent to ${newEmail.trim()}. The change takes effect once confirmed.`);
     newEmail = "";
     await authClient.getSession({ query: { disableCookieCache: true } });
   } catch (err) {
-    emailError = err instanceof ApiError ? err.message : "Could not change email.";
+    toastError(err instanceof ApiError ? err.message : "Could not change email.");
   } finally {
     emailBusy = false;
   }
@@ -46,18 +41,16 @@ async function changePassword(event: SubmitEvent) {
   event.preventDefault();
   if (passwordDisabled) return;
   passwordBusy = true;
-  passwordError = null;
-  passwordMsg = null;
   try {
     await api<{ ok: boolean }>("/api/me/password", {
       method: "POST",
       body: JSON.stringify({ currentPassword, newPassword }),
     });
-    passwordMsg = "Password updated.";
+    toastSuccess("Password updated.");
     currentPassword = "";
     newPassword = "";
   } catch (err) {
-    passwordError = err instanceof ApiError ? err.message : "Could not change password.";
+    toastError(err instanceof ApiError ? err.message : "Could not change password.");
   } finally {
     passwordBusy = false;
   }
@@ -100,12 +93,6 @@ function inputClass() {
           class={inputClass()}
         />
       </label>
-      {#if emailMsg}
-        <p role="status" class="text-sm text-green-700 dark:text-green-300">{emailMsg}</p>
-      {/if}
-      {#if emailError}
-        <p role="alert" class="text-sm text-red-600 dark:text-red-400">{emailError}</p>
-      {/if}
       <button
         type="submit"
         disabled={emailDisabled}
@@ -144,12 +131,6 @@ function inputClass() {
           class={inputClass()}
         />
       </label>
-      {#if passwordMsg}
-        <p role="status" class="text-sm text-green-700 dark:text-green-300">{passwordMsg}</p>
-      {/if}
-      {#if passwordError}
-        <p role="alert" class="text-sm text-red-600 dark:text-red-400">{passwordError}</p>
-      {/if}
       <button
         type="submit"
         disabled={passwordDisabled}

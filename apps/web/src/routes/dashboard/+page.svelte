@@ -2,15 +2,34 @@
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Plus from "@lucide/svelte/icons/plus";
   import Search from "@lucide/svelte/icons/search";
-  import { PLAN_LABEL, type TeamMembership } from "$lib/types";
+  import { PLAN_RANK, PLAN_LABEL, type PlanId, type TeamMembership } from "$lib/types";
   import type { PageProps } from "./$types";
 
   const PAGE_SIZE = 8;
+  const TEAMS_PER_USER: Record<PlanId, number | null> = {
+    free: 3,
+    plus: null,
+    pro: null,
+  };
 
   let { data }: PageProps = $props();
 
   const teams = $derived<TeamMembership[]>(data.me?.teams ?? []);
   const hasTeams = $derived(teams.length > 0);
+
+  const governingPlan = $derived.by<PlanId>(() => {
+    let best: PlanId = "free";
+    for (const t of teams) {
+      if (t.role !== "owner" && t.role !== "admin") continue;
+      const rank = t.plan in PLAN_RANK ? PLAN_RANK[t.plan] : PLAN_RANK.free;
+      if (rank > PLAN_RANK[best]) best = t.plan;
+    }
+    return best;
+  });
+  const teamsCap = $derived(TEAMS_PER_USER[governingPlan]);
+  const teamsCapReached = $derived(
+    teamsCap !== null && teams.length >= teamsCap,
+  );
 
   let query = $state("");
   let visibleCount = $state(PAGE_SIZE);
@@ -52,7 +71,17 @@
         Signed in as {data.me?.user?.email ?? "your account"}.
       </p>
     </div>
-    <a href="/teams/new" class="btn btn-primary px-4 py-2 text-sm">
+    <a
+      href="/teams/new"
+      aria-disabled={teamsCapReached}
+      class="btn btn-primary px-4 py-2 text-sm"
+      class:pointer-events-none={teamsCapReached}
+      class:cursor-not-allowed={teamsCapReached}
+      class:opacity-50={teamsCapReached}
+      title={teamsCapReached
+        ? `Team limit reached (${teamsCap}) on the ${PLAN_LABEL[governingPlan]} plan`
+        : undefined}
+    >
       <Plus class="size-4" />
       New team
     </a>

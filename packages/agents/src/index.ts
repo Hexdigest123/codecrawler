@@ -5,16 +5,32 @@ import nodePath from "node:path";
 import { promisify } from "node:util";
 import { createLangChainClient, fetchModelCatalog, resolveProvider } from "@codecrawler/ai";
 import { db, schema } from "@codecrawler/db";
-import { computeReviewCost } from "@codecrawler/quotas";
-import type { BillingMode, CoverageStrategy, Severity } from "@codecrawler/shared";
-import { DEFAULT_COVERAGE_STRATEGY, DEFAULT_NODE_MODELS, env } from "@codecrawler/shared";
+import { computeReviewCost, creditsFromSpend } from "@codecrawler/quotas";
+import type { BillingMode, CoverageStrategy, DepthTier, Severity } from "@codecrawler/shared";
+import {
+  DEFAULT_COVERAGE_STRATEGY,
+  DEFAULT_NODE_MODELS,
+  env,
+  resolveDepthFromMode,
+} from "@codecrawler/shared";
 import type { Diff, DiffFile, PR, VcsAuth } from "@codecrawler/vcs";
 import { getVcsProvider } from "@codecrawler/vcs";
-import { type AIMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
+import {
+  type AIMessage,
+  type BaseMessage,
+  HumanMessage,
+  isAIMessage,
+  isSystemMessage,
+  isToolMessage,
+  SystemMessage,
+} from "@langchain/core/messages";
 import { Annotation, END, Send, START, StateGraph } from "@langchain/langgraph";
+import { createReactAgent } from "@langchain/langgraph/prebuilt";
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
+import { buildRepoMap } from "./repo-map";
+import { createRepoTools, type ToolStats } from "./tools";
 
 const execFileAsync = promisify(execFile);
 
@@ -59,6 +75,13 @@ export interface ReviewInput {
   profileId?: string;
   /** Origin of the run, surfaced on the review page + used to keep the meter honest. */
   source?: "webhook" | "manual" | "synthetic" | "comment";
+  /**
+   * Agentic depth tier for this run. When undefined the tier is resolved from
+   * REVIEW_AGENT_MODE (auto → DEFAULT_DEPTH_TIER). "static" selects the legacy
+   * single-shot path; "quick"/"deep" enable the ReAct agent loop with read-only
+   * repo tools. Deep is plan-gated at enqueue time by the API.
+   */
+  depth?: DepthTier;
 }
 
 export interface ReviewResult {
@@ -70,6 +93,9 @@ export interface ReviewResult {
   tokenSpendUsd: number;
   modelIds: string[];
   sliceCount: number;
+  depth: DepthTier;
+  agentSteps: number;
+  toolCalls: number;
   error?: string;
 }
 
@@ -149,13 +175,15 @@ export async function getReviewGraphDescriptor(opts: {
   ]);
   const nodes: GraphNodeDescriptor[] = [
     { key: "INGEST", label: "Ingest", role: "fixed", modelBearing: false },
+    { key: "INDEX", label: "Index", role: "fixed", modelBearing: false },
     plan,
     review,
     synthesize,
     { key: "POST", label: "Post", role: "fixed", modelBearing: false },
   ];
   const edges: GraphEdgeDescriptor[] = [
-    { from: "INGEST", to: "PLAN", label: "ok", conditional: true },
+    { from: "INGEST", to: "INDEX", label: "ok", conditional: true },
+    { from: "INDEX", to: "PLAN" },
     { from: "PLAN", to: "REVIEW", label: "fan-out · per unit", conditional: true },
     { from: "PLAN", to: "SYNTHESIZE", label: "if 0 units", conditional: true },
     { from: "REVIEW", to: "SYNTHESIZE", label: "join" },
@@ -223,6 +251,152 @@ function resolveNodeModels(input: ReviewInput | undefined): NodeModels {
       summarizer: DEFAULT_NODE_MODELS.summarizer,
     }
   );
+}
+
+/**
+ * Resolve the agentic depth tier for a run. Delegates to the shared
+ * {@link resolveDepthFromMode} so the API preflight, this graph, and the quota
+ * projection all agree; the per-run override comes from ReviewInput.depth (set
+ * by the API when the trigger pins a tier, e.g. `/codecrawler deep`).
+ */
+function resolveDepth(input: ReviewInput | undefined): DepthTier {
+  return resolveDepthFromMode(input?.depth);
+}
+
+function tierMaxSteps(depth: DepthTier): number {
+  if (depth === "deep") return Math.max(1, env.REVIEW_AGENT_MAX_STEPS_DEEP);
+  return Math.max(1, env.REVIEW_AGENT_MAX_STEPS_QUICK);
+}
+
+function tierBudgetUsd(depth: DepthTier): number {
+  if (depth === "deep") return Math.max(0, env.REVIEW_AGENT_BUDGET_USD_DEEP);
+  return Math.max(0, env.REVIEW_AGENT_BUDGET_USD_QUICK);
+}
+
+/** Race a promise against a hard timeout so a stuck agent loop can't hang a worker slot. */
+function withAgentTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`agent timed out after ${ms}ms`)),
+        Math.max(1000, ms),
+      );
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Sum real token usage across every AIMessage produced by an agent run and
+ * price it against the live model catalog. Each intermediate AIMessage carries
+ * the token cost of its own (growing) input + output, so summing gives the true
+ * spend for the loop — the basis for metered billing.
+ */
+async function summarizeMessagesUsage(
+  messages: BaseMessage[],
+  modelId: string,
+  orgId: string,
+): Promise<Usage> {
+  let promptTokens = 0;
+  let completionTokens = 0;
+  for (const m of messages) {
+    if (!isAIMessage(m)) continue;
+    const meta = (m as AIMessage).usage_metadata;
+    promptTokens += meta?.input_tokens ?? 0;
+    completionTokens += meta?.output_tokens ?? 0;
+  }
+  const pricing = await lookupPricePer1k(modelId, orgId);
+  const spendUsd = (promptTokens * pricing.prompt + completionTokens * pricing.completion) / 1000;
+  return { promptTokens, completionTokens, spendUsd };
+}
+
+interface AgentRunResult {
+  content: string;
+  usage: Usage;
+  /** Number of model (agent) turns in the loop. */
+  steps: number;
+  /** Number of tool executions in the loop. */
+  toolCalls: number;
+  stats: ToolStats;
+}
+
+/**
+ * Run a ReAct agent (model + read-only repo tools) bounded by a step cap and a
+ * hard timeout. Returns the final assistant text, cumulative token usage, and
+ * step/tool-call counts for observability + metered billing.
+ */
+async function runAgent(opts: {
+  modelId: string;
+  orgId: string;
+  system: string;
+  user: string;
+  repoPath: string;
+  depth: DepthTier;
+}): Promise<AgentRunResult> {
+  const { tools, stats } = createRepoTools(opts.repoPath);
+  const model = await createLangChainClient({ modelId: opts.modelId, orgId: opts.orgId });
+  const agent = createReactAgent({ llm: model, tools, prompt: opts.system });
+  const maxSteps = tierMaxSteps(opts.depth);
+  // Each agent turn + its tool batch costs ~2 graph transitions, plus a final
+  // turn → recursionLimit = 2 * maxSteps + 2 keeps the loop inside the cap.
+  const recursionLimit = maxSteps * 2 + 2;
+
+  // Stream (streamMode "values") so we keep the accumulated transcript even when
+  // a chatty model blows past the step cap and the run throws — the last yielded
+  // snapshot holds every message produced so far.
+  let messages: BaseMessage[] = [];
+  try {
+    const stream = await agent.stream(
+      { messages: [new HumanMessage(opts.user)] },
+      { recursionLimit, streamMode: "values" },
+    );
+    for await (const chunk of stream) {
+      const m = (chunk as { messages?: BaseMessage[] }).messages;
+      if (m && m.length > 0) messages = m;
+    }
+  } catch (e) {
+    console.warn(
+      `[agents] ${opts.modelId} hit the ${maxSteps}-step exploration cap; finalizing from gathered context. (${errMsg(e)})`,
+    );
+  }
+
+  // A "clean finish" = the model emitted a final assistant turn with no pending
+  // tool calls. Chatty models often hit the cap mid-exploration instead, leaving
+  // the last AIMessage still requesting tools — so we force a single tool-less
+  // finalization call over the transcript to guarantee a usable answer. This is
+  // what keeps a verbose model from dragging the whole review down to a
+  // degraded fallback: it always yields the structured output the caller needs.
+  const lastAi = [...messages].reverse().find(isAIMessage);
+  let content =
+    lastAi && (!lastAi.tool_calls || lastAi.tool_calls.length === 0)
+      ? extractText(lastAi.content)
+      : "";
+
+  if (!content.trim()) {
+    try {
+      const transcript = messages.filter((m) => !isSystemMessage(m));
+      const finalizeRes = (await withAgentTimeout(
+        model.invoke([
+          new SystemMessage(opts.system),
+          ...transcript,
+          new HumanMessage(
+            "Exploration budget exhausted. Using ONLY the context gathered above, produce the final answer required by the original instructions now — do not request any tools.",
+          ),
+        ]),
+        env.REVIEW_AGENT_TIMEOUT_MS,
+      )) as AIMessage;
+      messages = [...messages, finalizeRes];
+      content = extractText(finalizeRes.content);
+    } catch (e2) {
+      console.warn(`[agents] ${opts.modelId} finalization call failed: ${errMsg(e2)}`);
+    }
+  }
+
+  const usage = await summarizeMessagesUsage(messages, opts.modelId, opts.orgId);
+  const steps = messages.filter(isAIMessage).length;
+  const toolCalls = messages.filter(isToolMessage).length;
+  return { content, usage, steps, toolCalls, stats };
 }
 
 function normalizeCategory(raw: string): ReviewCategory {
@@ -439,9 +613,27 @@ function prRefCandidates(input: ReviewInput, pr: PR): string[] {
   return Array.from(new Set(refs));
 }
 
-async function git(args: string[], cwd: string, token?: string): Promise<void> {
-  const gitArgs = token ? ["-c", `http.extraheader=Authorization: Bearer ${token}`, ...args] : args;
-  await execFileAsync("git", gitArgs, { cwd, timeout: 120_000, maxBuffer: 1024 * 1024 });
+async function git(args: string[], cwd: string): Promise<void> {
+  await execFileAsync("git", args, { cwd, timeout: 120_000, maxBuffer: 1024 * 1024 });
+}
+
+/**
+ * Embed the VCS token in the fetch URL as the username. GitHub (fine-grained and
+ * classic PATs, OAuth + App installation tokens), GitLab, and Gitea all accept
+ * the credential this way over HTTPS — unlike the `Authorization: Bearer` extra
+ * header, which GitHub rejects for fine-grained PATs. The token lives only in
+ * the argv of the one-shot fetch, never in .git/config.
+ */
+function authenticatedRepoUrl(input: ReviewInput, token?: string): string {
+  const bare = reviewRepoUrl(input);
+  if (!token) return bare;
+  try {
+    const u = new URL(bare);
+    u.username = encodeURIComponent(token);
+    return u.toString();
+  } catch {
+    return bare;
+  }
 }
 
 async function materializePrCheckout(
@@ -452,11 +644,13 @@ async function materializePrCheckout(
   if (!input.auth) throw new Error("missing vcs auth for checkout");
   await fs.mkdir(targetPath, { recursive: true });
   await git(["init"], targetPath);
-  await git(["remote", "add", "origin", reviewRepoUrl(input)], targetPath);
+  // Fetch directly from the authenticated URL rather than adding a named remote,
+  // so the token is never written to .git/config in the (ephemeral) checkout.
+  const url = authenticatedRepoUrl(input, input.auth.token);
   let lastError = "unknown fetch error";
   for (const ref of prRefCandidates(input, pr)) {
     try {
-      await git(["fetch", "--depth=1", "origin", ref], targetPath, input.auth.token);
+      await git(["fetch", "--depth=1", url, ref], targetPath);
       await git(["checkout", "--detach", "FETCH_HEAD"], targetPath);
       return;
     } catch (e) {
@@ -592,6 +786,11 @@ const ReviewState = Annotation.Root({
   creditsCost: Annotation<number | undefined>({ reducer: (_a, b) => b, default: () => undefined }),
   status: Annotation<string>({ reducer: (_a, b) => b ?? "running", default: () => "running" }),
   error: Annotation<string | undefined>({ reducer: (a, b) => a ?? b, default: () => undefined }),
+  // Agentic workflow state.
+  repoMap: Annotation<string>({ reducer: (_a, b) => b ?? "", default: () => "" }),
+  depth: Annotation<DepthTier>({ reducer: (_a, b) => b ?? "static", default: () => "static" }),
+  agentSteps: Annotation<number>({ reducer: (a, b) => a + (b ?? 0), default: () => 0 }),
+  toolCalls: Annotation<number>({ reducer: (a, b) => a + (b ?? 0), default: () => 0 }),
 });
 
 type State = typeof ReviewState.State;
@@ -644,9 +843,38 @@ async function ingestNode(state: State): Promise<Partial<State>> {
 async function planNode(state: State): Promise<Partial<State>> {
   const input = state.input;
   const nodeModels = resolveNodeModels(input);
+  const depth = state.depth;
+  const diff = state.diff ?? { files: [] };
+  const strategy = input.coverageStrategy ?? DEFAULT_COVERAGE_STRATEGY;
   try {
-    const diff = state.diff ?? { files: [] };
-    const strategy = input.coverageStrategy ?? DEFAULT_COVERAGE_STRATEGY;
+    // The orchestrator's value is choosing coupled specialist tasks; only the
+    // by_filegroup strategy calls a model at all, and only with a real checkout
+    // can the agent actually explore. Everything else fans out per-file.
+    if (
+      depth !== "static" &&
+      state.repoPath &&
+      strategy === "by_filegroup" &&
+      diff.files.length > 1
+    ) {
+      const built = await buildUnitsAgentic(
+        nodeModels,
+        input.orgId,
+        strategy,
+        diff.files,
+        envMaxSlices(),
+        state.repoMap ?? "",
+        state.repoPath,
+        depth,
+      );
+      return {
+        units: built.units,
+        usage: built.usage,
+        modelIds: [nodeModels.orchestrator],
+        agentSteps: built.steps,
+        toolCalls: built.toolCalls,
+        status: "planned",
+      };
+    }
     const { units, usage } = await buildUnits(
       nodeModels,
       input.orgId,
@@ -665,17 +893,116 @@ async function planNode(state: State): Promise<Partial<State>> {
   }
 }
 
+/**
+ * Agentic planner: the orchestrator explores the real checkout with read-only
+ * tools (guided by the repo map) to understand coupling and risk, then emits
+ * specialist review tasks. Mirrors {@link buildUnits}' grouping + completeness
+ * fallback but sources the plan from a ReAct loop instead of a single shot.
+ */
+async function buildUnitsAgentic(
+  nodeModels: NodeModels,
+  orgId: string,
+  strategy: CoverageStrategy,
+  files: DiffFile[],
+  maxSlices: number,
+  repoMap: string,
+  repoPath: string,
+  depth: DepthTier,
+): Promise<{ units: ReviewUnit[]; usage: Usage; steps: number; toolCalls: number }> {
+  const fileList = files
+    .map((f) => `- ${f.path} [${f.status}, +${f.additions}/-${f.deletions}]`)
+    .join("\n");
+  const system = [
+    "You are the orchestrator for an agentic pull request review.",
+    "You have read-only tools (read_file, search_code, list_dir) bound to the PR checkout.",
+    "Explore the changed files and the surrounding code to understand real coupling and risk before assigning tasks.",
+    "Every changed file MUST appear in at least one task.",
+    "Prefer cohesive tasks; create extra focused tasks for high-risk areas like auth, data loss, security, migrations, concurrency, billing, or API contracts.",
+    'Respond with ONLY compact JSON: {"tasks":[{"files":["path"],"focus":"short specialist focus","instructions":"specific things this subagent should verify"}]}.',
+  ].join(" ");
+  const user = `Strategy: ${strategy}\n\nRepository map:\n${repoMap}\n\nChanged files:\n${fileList}`;
+  const { content, usage, steps, toolCalls } = await runAgent({
+    modelId: nodeModels.orchestrator,
+    orgId,
+    system,
+    user,
+    repoPath,
+    depth,
+  });
+  const parsed = PlanSchema.safeParse(extractJson(content));
+  const known = new Set(files.map((f) => f.path));
+  const byPath = new Map(files.map((f) => [f.path, f]));
+  const units: ReviewUnit[] = [];
+  const used = new Set<string>();
+  if (parsed.success && parsed.data.tasks?.length) {
+    for (let i = 0; i < parsed.data.tasks.length; i += 1) {
+      const task = parsed.data.tasks[i];
+      const paths = (task.files ?? []).filter((p) => known.has(p));
+      if (paths.length === 0) continue;
+      for (const p of paths) used.add(p);
+      units.push(buildUnit(`slice-${i + 1}`, paths, byPath, task.focus, task.instructions));
+    }
+  }
+  for (const f of files) {
+    if (!used.has(f.path)) {
+      used.add(f.path);
+      units.push(
+        buildUnit(
+          `slice-${units.length + 1}`,
+          [f.path],
+          byPath,
+          "Completeness fallback",
+          "Review this file because the orchestrator did not assign it to a specialist task.",
+        ),
+      );
+    }
+  }
+  return { units: capUnits(units, maxSlices), usage, steps, toolCalls };
+}
+
 async function reviewNode(state: State): Promise<Partial<State>> {
   const input = state.input;
   const unit = state.currentUnit;
   if (!unit) return {};
   const nodeModels = resolveNodeModels(input);
+  const depth = state.depth;
+  const focus = unit.focus ? `\nTask focus: ${unit.focus}` : "";
+  const instructions = unit.instructions ? `\nOrchestrator instructions: ${unit.instructions}` : "";
   try {
+    if (depth !== "static" && state.repoPath) {
+      // Budget is shared across the whole run (plan + all reviewers + synthesize).
+      // Once cumulative spend reaches the tier ceiling, drop to the static single
+      // shot so a runaway loop can never blow past REVIEW_AGENT_BUDGET_USD_*.
+      const priorSpend = state.usage?.spendUsd ?? 0;
+      const budgetRemaining = tierBudgetUsd(depth) - priorSpend;
+      if (budgetRemaining > 0) {
+        const projectContext = await buildProjectContext(state.repoPath, unit.files);
+        const system = [
+          "You are an expert code review subagent with read-only tools (read_file, search_code, list_dir) bound to the PR checkout.",
+          "Use the tools to read surrounding code and confirm each suspected issue is real before reporting it.",
+          "Report concrete, actionable issues anchored to real changed-line numbers from the diff.",
+          "Severity must be one of: critical, high, medium, low, nitpick.",
+          "If the task is clean, return an empty findings array.",
+          'Respond with ONLY JSON: {"findings":[{"file":string,"line":number,"severity":"critical|high|medium|low|nitpick","category":string,"message":string,"suggestion":string}]}.',
+        ].join(" ");
+        const user = `Review unit ${unit.id} covering files:\n${unit.files.join("\n")}${focus}${instructions}\n\nProject checkout context:\n${projectContext}\n\nDiff:\n${unit.slice}`;
+        const { content, usage, steps, toolCalls } = await runAgent({
+          modelId: nodeModels.reviewer,
+          orgId: input.orgId,
+          system,
+          user,
+          repoPath: state.repoPath,
+          depth,
+        });
+        const parsed = FindingsOutputSchema.safeParse(extractJson(content));
+        let findings: Finding[] = [];
+        if (parsed.success) {
+          findings = parsed.data.findings.map(toFinding).filter((f): f is Finding => f !== null);
+        }
+        return { findings, usage, modelIds: [nodeModels.reviewer], agentSteps: steps, toolCalls };
+      }
+    }
     const projectContext = await buildProjectContext(state.repoPath ?? input.repoPath, unit.files);
-    const focus = unit.focus ? `\nTask focus: ${unit.focus}` : "";
-    const instructions = unit.instructions
-      ? `\nOrchestrator instructions: ${unit.instructions}`
-      : "";
     const system = [
       "You are an expert code review subagent.",
       "Execute only the orchestrator-assigned task and use the project checkout context to understand surrounding code.",
@@ -782,6 +1109,9 @@ async function persistReview(
   spendUsd: number,
   modelIds: string[],
   findings: Finding[],
+  depth: DepthTier,
+  agentSteps: number,
+  toolCalls: number,
   diffSnapshot: Diff | undefined,
 ): Promise<string> {
   const source = input.source ?? (input.syntheticPr ? "synthetic" : "manual");
@@ -797,6 +1127,9 @@ async function persistReview(
         tokenSpendUsd: spendUsd.toFixed(4),
         modelIds,
         source,
+        depth,
+        agentSteps,
+        toolCalls,
         diff: diffSnapshot ?? null,
         completedAt: new Date(),
       })
@@ -832,6 +1165,9 @@ async function persistReview(
       tokenSpendUsd: spendUsd.toFixed(4),
       modelIds,
       source,
+      depth,
+      agentSteps,
+      toolCalls,
       diff: diffSnapshot ?? null,
       completedAt: new Date(),
     })
@@ -868,21 +1204,31 @@ async function postNode(state: State): Promise<Partial<State>> {
     const summ = await resolvedOf(nodeModels.summarizer, input.orgId);
     const billingMode = aggregateBilling([orch.billingMode, rev.billingMode, summ.billingMode]);
     const failed = Boolean(state.error);
-    const projected = failed
-      ? 0
-      : computeReviewCost({
-          orchestratorWeight: orch.weight,
-          reviewerWeight: rev.weight,
-          summarizerWeight: summ.weight,
-          sliceCount,
-        });
-    const creditsCost = billingMode === "byok" ? 0 : projected;
+    const depth = resolveDepth(input);
+    const spendUsd = state.usage?.spendUsd ?? 0;
+    // Metered billing: agentic runs charge real token spend at the metered rate
+    // (spendUsd × CREDITS_PER_USD); the static path keeps the model-weight
+    // formula. BYOK runs are free of platform charges; failed runs cost nothing.
+    let creditsCost: number;
+    if (failed || billingMode === "byok") {
+      creditsCost = 0;
+    } else if (depth !== "static") {
+      creditsCost = creditsFromSpend(spendUsd, billingMode);
+    } else {
+      creditsCost = computeReviewCost({
+        orchestratorWeight: orch.weight,
+        reviewerWeight: rev.weight,
+        summarizerWeight: summ.weight,
+        sliceCount,
+      });
+    }
     const modelIds = Array.from(
       new Set([nodeModels.orchestrator, nodeModels.reviewer, nodeModels.summarizer]),
     );
     const walkthrough = state.walkthrough ?? "";
     const reviewStatus: "completed" | "failed" = failed ? "failed" : "completed";
-    const spendUsd = state.usage?.spendUsd ?? 0;
+    const agentSteps = state.agentSteps ?? 0;
+    const toolCalls = state.toolCalls ?? 0;
 
     await persistReview(
       input,
@@ -894,6 +1240,9 @@ async function postNode(state: State): Promise<Partial<State>> {
       spendUsd,
       modelIds,
       findings,
+      depth,
+      agentSteps,
+      toolCalls,
       capDiffForStorage(state.diff),
     );
 
@@ -924,8 +1273,29 @@ async function postNode(state: State): Promise<Partial<State>> {
   }
 }
 
+/**
+ * Build (or fetch from Redis) the compact repo map and resolve the depth tier
+ * once for the whole run. Runs on every review — for the static path it's a
+ * near-free no-op (no checkout, empty map); for the agentic path the cached map
+ * is the token-cheap structural context every downstream agent starts from.
+ */
+async function indexNode(state: State): Promise<Partial<State>> {
+  const depth = resolveDepth(state.input);
+  if (depth === "static" || !state.repoPath) {
+    return { depth, repoMap: state.repoMap ?? "" };
+  }
+  try {
+    const sha = state.pr?.headSha;
+    const map = await buildRepoMap(state.repoPath, sha ?? undefined);
+    return { depth, repoMap: map.text };
+  } catch (e) {
+    console.warn(`[agents] repo map build failed: ${errMsg(e)}`);
+    return { depth, repoMap: state.repoMap ?? "" };
+  }
+}
+
 function ingestRouter(state: State): string {
-  return state.error ? END : "PLAN";
+  return state.error ? END : "INDEX";
 }
 
 function planFanOut(state: State): string | Send[] {
@@ -933,7 +1303,20 @@ function planFanOut(state: State): string | Send[] {
   const units = state.units ?? [];
   if (units.length === 0) return "SYNTHESIZE";
   const input = state.input;
-  return units.map((u) => new Send("REVIEW", { currentUnit: u, input }));
+  // LangGraph Send payloads are how parallel branches receive state. The shared
+  // checkout context (repoPath/repoMap) and resolved depth must be carried into
+  // each reviewer branch explicitly, or the reviewer agents can't see the
+  // checkout and silently fall back to the static diff-only path.
+  return units.map(
+    (u) =>
+      new Send("REVIEW", {
+        currentUnit: u,
+        input,
+        repoPath: state.repoPath,
+        repoMap: state.repoMap,
+        depth: state.depth,
+      }),
+  );
 }
 
 let defaultSaver: PostgresSaver | null = null;
@@ -952,12 +1335,14 @@ export async function createReviewGraph(checkpointer?: PostgresSaver) {
   const saver = checkpointer ?? (await getDefaultSaver());
   const builder = new StateGraph(ReviewState)
     .addNode("INGEST", ingestNode)
+    .addNode("INDEX", indexNode)
     .addNode("PLAN", planNode)
     .addNode("REVIEW", reviewNode)
     .addNode("SYNTHESIZE", synthesizeNode)
     .addNode("POST", postNode)
     .addEdge(START, "INGEST")
     .addConditionalEdges("INGEST", ingestRouter)
+    .addEdge("INDEX", "PLAN")
     .addConditionalEdges("PLAN", planFanOut)
     .addEdge("REVIEW", "SYNTHESIZE")
     .addEdge("SYNTHESIZE", "POST")
@@ -976,6 +1361,9 @@ function toResult(state: State): ReviewResult {
     tokenSpendUsd: state.usage?.spendUsd ?? 0,
     modelIds: state.modelIds ?? [],
     sliceCount: state.units?.length ?? 0,
+    depth: state.depth ?? "static",
+    agentSteps: state.agentSteps ?? 0,
+    toolCalls: state.toolCalls ?? 0,
     error: state.error,
   };
 }
@@ -990,6 +1378,9 @@ function failedResult(error: string): ReviewResult {
     tokenSpendUsd: 0,
     modelIds: [],
     sliceCount: 0,
+    depth: "static",
+    agentSteps: 0,
+    toolCalls: 0,
     error,
   };
 }
@@ -1018,6 +1409,10 @@ export async function runReview(input: ReviewInput): Promise<ReviewResult> {
       creditsCost: undefined,
       status: "running",
       error: undefined,
+      repoMap: "",
+      depth: resolveDepth(runInput),
+      agentSteps: 0,
+      toolCalls: 0,
     };
     const final = (await graph.invoke(init, {
       configurable: { thread_id: threadId },
@@ -1036,3 +1431,8 @@ export async function runReview(input: ReviewInput): Promise<ReviewResult> {
     }
   }
 }
+
+export type { RepoMapResult } from "./repo-map";
+export { buildRepoMap } from "./repo-map";
+export type { RepoToolName, RepoTools, ToolStats } from "./tools";
+export { createRepoTools, REPO_TOOL_NAMES } from "./tools";

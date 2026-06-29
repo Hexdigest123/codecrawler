@@ -6,7 +6,7 @@ export {
   verifyByokKey,
 } from "./byok";
 export type { CatalogModel } from "./catalog";
-export { fetchModelCatalog } from "./catalog";
+export { fetchModelCatalog, findCatalogModelById } from "./catalog";
 export type { CreateLangChainClientOpts } from "./client";
 export { createLangChainClient } from "./client";
 export type { ModelGateway, SaiaKnownModel } from "./providers";
@@ -29,6 +29,9 @@ export { resolveProvider } from "./resolve";
 export {
   computeWeight,
   minPlanForWeight,
-  WEIGHT_BASELINE_USD_PER_1K,
+  WEIGHT_1X_USD_PER_1M,
+  WEIGHT_7X_USD_PER_1M,
+  WEIGHT_MAX,
+  WEIGHT_MIN,
   WEIGHT_PLAN_BANDS,
 } from "./weight";
