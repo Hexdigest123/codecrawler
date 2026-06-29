@@ -45,9 +45,6 @@ const envSchema = z.object({
   LANGCHAIN_TRACING_V2: asBoolean.default(false),
   LANGCHAIN_API_KEY: asString.optional(),
   LANGCHAIN_PROJECT: asString.default("codecrawler"),
-  SNYK_TOKEN: asString.optional(),
-  SNYK_API: asString.default("https://api.snyk.io"),
-  SNYK_ORG_ID: asString.optional(),
   MOLLIE_API_KEY: asString.optional(),
   MOLLIE_REDIRECT_URL: asString.optional(),
   MOLLIE_WEBHOOK_URL: asString.optional(),
@@ -59,7 +56,6 @@ const envSchema = z.object({
   MAIL_FROM: asString.default("CodeCrawler <noreply@codecrawler.local>"),
   REVIEW_MAX_DIFF_BYTES: asNumber.default(1500000),
   REVIEW_MAX_SLICES: asNumber.default(16),
-  SECURITY_SCAN_TIMEOUT_MS: asNumber.default(900000),
   // GitHub App credentials. When GH_APP_ID + GH_APP_PRIVATE_KEY are set, VCS
   // access for GitHub uses installation tokens minted by the App (production
   // path). GH_TEST_PAT remains as a local-dev escape hatch only.

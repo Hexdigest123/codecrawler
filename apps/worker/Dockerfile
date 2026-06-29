@@ -17,8 +17,4 @@ COPY --from=build /app/node_modules /app/node_modules/
 COPY --from=build /app/apps/worker /app/apps/worker/
 COPY --from=build /app/packages /app/packages/
 
-RUN bun add -g snyk
-
-ENV SNYK_API=https://api.snyk.io
-
 CMD ["bun", "src/index.ts"]

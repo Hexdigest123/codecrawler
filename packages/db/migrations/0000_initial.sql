@@ -5,7 +5,7 @@ CREATE TYPE "plan" AS ENUM('free', 'plus', 'pro');
 --> statement-breakpoint
 CREATE TYPE "provider" AS ENUM('openrouter', 'openai', 'anthropic', 'google', 'xai', 'zai', 'kimi', 'mistral', 'nvidia', 'minimax', 'qwen', 'deepseek');
 --> statement-breakpoint
-CREATE TYPE "graph_type" AS ENUM('pr_review', 'security');
+CREATE TYPE "graph_type" AS ENUM('pr_review');
 --> statement-breakpoint
 CREATE TYPE "coverage_strategy" AS ENUM('by_commit', 'by_filegroup', 'full');
 --> statement-breakpoint
@@ -14,8 +14,6 @@ CREATE TYPE "billing_mode" AS ENUM('hosted', 'byok', 'mixed');
 CREATE TYPE "review_status" AS ENUM('pending', 'queued', 'running', 'completed', 'failed', 'cancelled');
 --> statement-breakpoint
 CREATE TYPE "review_category" AS ENUM('possible_issue', 'security', 'performance', 'nitpick', 'praise');
---> statement-breakpoint
-CREATE TYPE "security_finding_kind" AS ENUM('sast', 'dep', 'secret', 'ai');
 --> statement-breakpoint
 CREATE TYPE "severity" AS ENUM('critical', 'high', 'medium', 'low', 'nitpick');
 --> statement-breakpoint
@@ -199,32 +197,6 @@ CREATE TABLE "review_findings" (
 	"suggestion" text
 );
 --> statement-breakpoint
-CREATE TABLE "security_reports" (
-	"id" uuid DEFAULT gen_random_uuid() PRIMARY KEY NOT NULL,
-	"project_id" uuid NOT NULL,
-	"profile_id" uuid,
-	"status" "review_status" DEFAULT 'pending' NOT NULL,
-	"summary" text,
-	"billing_mode" "billing_mode",
-	"credits_cost" numeric DEFAULT '0' NOT NULL,
-	"token_spend_usd" numeric DEFAULT '0' NOT NULL,
-	"snyk_raw" jsonb,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "security_findings" (
-	"id" uuid DEFAULT gen_random_uuid() PRIMARY KEY NOT NULL,
-	"report_id" uuid NOT NULL,
-	"kind" "security_finding_kind" NOT NULL,
-	"severity" "severity",
-	"file" text,
-	"line" integer,
-	"package" text,
-	"vuln_version" text,
-	"fixed_version" text,
-	"message" text
-);
---> statement-breakpoint
 CREATE TABLE "usage" (
 	"id" uuid DEFAULT gen_random_uuid() PRIMARY KEY NOT NULL,
 	"org_id" text NOT NULL,
@@ -301,12 +273,6 @@ ALTER TABLE "reviews" ADD CONSTRAINT "reviews_profile_id_agent_profiles_id_fk" F
 --> statement-breakpoint
 ALTER TABLE "review_findings" ADD CONSTRAINT "review_findings_review_id_reviews_id_fk" FOREIGN KEY ("review_id") REFERENCES "reviews"("id") ON DELETE cascade ON UPDATE no action;
 --> statement-breakpoint
-ALTER TABLE "security_reports" ADD CONSTRAINT "security_reports_project_id_projects_id_fk" FOREIGN KEY ("project_id") REFERENCES "projects"("id") ON DELETE cascade ON UPDATE no action;
---> statement-breakpoint
-ALTER TABLE "security_reports" ADD CONSTRAINT "security_reports_profile_id_agent_profiles_id_fk" FOREIGN KEY ("profile_id") REFERENCES "agent_profiles"("id") ON DELETE no action ON UPDATE no action;
---> statement-breakpoint
-ALTER TABLE "security_findings" ADD CONSTRAINT "security_findings_report_id_security_reports_id_fk" FOREIGN KEY ("report_id") REFERENCES "security_reports"("id") ON DELETE cascade ON UPDATE no action;
---> statement-breakpoint
 ALTER TABLE "usage" ADD CONSTRAINT "usage_org_id_organization_id_fk" FOREIGN KEY ("org_id") REFERENCES "organization"("id") ON DELETE cascade ON UPDATE no action;
 --> statement-breakpoint
 ALTER TABLE "api_keys" ADD CONSTRAINT "api_keys_org_id_organization_id_fk" FOREIGN KEY ("org_id") REFERENCES "organization"("id") ON DELETE cascade ON UPDATE no action;
@@ -352,10 +318,6 @@ CREATE INDEX "reviews_prId_idx" ON "reviews" ("pr_id");
 CREATE INDEX "reviews_projectId_idx" ON "reviews" ("project_id");
 --> statement-breakpoint
 CREATE INDEX "review_findings_reviewId_idx" ON "review_findings" ("review_id");
---> statement-breakpoint
-CREATE INDEX "security_reports_projectId_idx" ON "security_reports" ("project_id");
---> statement-breakpoint
-CREATE INDEX "security_findings_reportId_idx" ON "security_findings" ("report_id");
 --> statement-breakpoint
 CREATE INDEX "usage_orgId_idx" ON "usage" ("org_id");
 --> statement-breakpoint

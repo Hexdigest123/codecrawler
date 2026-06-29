@@ -2,7 +2,6 @@ export type PlanId = "free" | "plus" | "pro";
 
 export interface PlanLimits {
   hostedReviewsPerDay: number | null;
-  securityReviewsPerWeek: number | null;
   membersPerTeam: number | null;
   teamsPerUser: number | null;
   customSso: boolean;
@@ -24,7 +23,6 @@ export function isUnlimited(value: number | null): boolean {
 export const PLAN_LIMITS: Record<PlanId, PlanLimits> = {
   free: {
     hostedReviewsPerDay: 0,
-    securityReviewsPerWeek: 0,
     membersPerTeam: 5,
     teamsPerUser: 1,
     customSso: false,
@@ -33,7 +31,6 @@ export const PLAN_LIMITS: Record<PlanId, PlanLimits> = {
   },
   plus: {
     hostedReviewsPerDay: 50,
-    securityReviewsPerWeek: 50,
     membersPerTeam: 5,
     teamsPerUser: null,
     customSso: false,
@@ -42,7 +39,6 @@ export const PLAN_LIMITS: Record<PlanId, PlanLimits> = {
   },
   pro: {
     hostedReviewsPerDay: null,
-    securityReviewsPerWeek: null,
     membersPerTeam: null,
     teamsPerUser: null,
     customSso: true,
@@ -61,7 +57,7 @@ export const plans: Plan[] = [
   {
     id: "plus",
     label: "Plus",
-    description: "Hosted review budget plus weekly security scans.",
+    description: "Hosted review budget for busy teams.",
     limits: PLAN_LIMITS.plus,
   },
   {

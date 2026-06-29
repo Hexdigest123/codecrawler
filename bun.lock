@@ -85,7 +85,6 @@
         "@codecrawler/ai": "workspace:*",
         "@codecrawler/db": "workspace:*",
         "@codecrawler/quotas": "workspace:*",
-        "@codecrawler/security": "workspace:*",
         "@codecrawler/shared": "workspace:*",
         "@codecrawler/vcs": "workspace:*",
         "@langchain/core": "^1.0.0",
@@ -194,16 +193,6 @@
         "typescript": "^5.9.0",
       },
     },
-    "packages/security": {
-      "name": "@codecrawler/security",
-      "version": "0.0.0",
-      "dependencies": {
-        "@codecrawler/shared": "workspace:*",
-      },
-      "devDependencies": {
-        "typescript": "^5.9.0",
-      },
-    },
     "packages/shared": {
       "name": "@codecrawler/shared",
       "version": "0.0.0",
@@ -286,8 +275,6 @@
     "@codecrawler/queue": ["@codecrawler/queue@workspace:packages/queue"],
 
     "@codecrawler/quotas": ["@codecrawler/quotas@workspace:packages/quotas"],
-
-    "@codecrawler/security": ["@codecrawler/security@workspace:packages/security"],
 
     "@codecrawler/shared": ["@codecrawler/shared@workspace:packages/shared"],
 

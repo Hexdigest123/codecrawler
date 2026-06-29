@@ -7,7 +7,7 @@
 #   DATABASE_URL=postgresql://codecrawler:postgres@db:5432/codecrawler
 #   REDIS_URL=redis://redis:6379
 # All remaining prod values (origins, BETTER_AUTH_SECRET, TOKEN_ENCRYPTION_KEY,
-# OPENROUTER_API_KEY, live Mollie key, SMTP, GitHub App creds, SNYK_TOKEN, ...)
+# OPENROUTER_API_KEY, live Mollie key, SMTP, GitHub App creds, ...)
 # live in that .env and are injected into api/worker/web via env_file.
 #
 # App images are built from the REPOSITORY ROOT (Bun-workspace context) so each
@@ -84,8 +84,6 @@ services:
     env_file: .env
     environment:
       NODE_ENV: production
-      # SNYK_TOKEN and SNYK_ORG_ID are injected from .env (env_file above); the
-      # worker image bundles the Snyk CLI and consumes them at runtime.
     depends_on:
       db:
         condition: service_healthy

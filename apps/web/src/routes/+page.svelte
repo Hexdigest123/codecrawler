@@ -14,13 +14,12 @@ import Brand from "$lib/components/Brand.svelte";
 const metrics = [
   { value: "92%", label: "less manual review drag" },
   { value: "8m", label: "median PR turnaround" },
-  { value: "24/7", label: "security sweep coverage" },
+  { value: "3", label: "VCS providers supported" },
 ];
 
 const signals = ["Agentic PR reasoning", "Whole-repo context", "BYOK provider routing"];
 
 const reviewFindings = [
-  { type: "Security", title: "Tenant boundary bypass", severity: "High" },
   { type: "Logic", title: "Race condition in billing sync", severity: "Medium" },
   { type: "Quality", title: "Dead path after feature flag", severity: "Low" },
 ];
@@ -39,7 +38,7 @@ const workflow = [
   {
     step: "03",
     title: "Ship with a second brain in CI",
-    text: "Every pull request gets contextual findings, security reports, and a clean audit trail for the team.",
+    text: "Every pull request gets contextual findings and a clean audit trail for the team.",
   },
 ];
 
@@ -54,11 +53,6 @@ const faqs = [
     answer:
       "Yes. BYOK is a core workflow, so teams can control model spend, provider selection, and review volume.",
   },
-  {
-    question: "What does the security scanner cover?",
-    answer:
-      "It inspects project structure, auth and data access flows, dependency-sensitive code, and risky diffs across the repository.",
-  },
 ];
 </script>
 
@@ -66,7 +60,7 @@ const faqs = [
   <title>CodeCrawler | Agentic AI code reviews</title>
   <meta
     name="description"
-    content="CodeCrawler reviews pull requests with whole-project context, security scanning, BYOK model routing, and team-ready audit trails."
+    content="CodeCrawler reviews pull requests with whole-project context, BYOK model routing, and team-ready audit trails."
   />
 </svelte:head>
 
@@ -92,7 +86,7 @@ const faqs = [
         </h1>
         <p class="max-w-2xl text-lg leading-8 text-neutral-600 sm:text-xl dark:text-neutral-300">
           CodeCrawler gives every pull request an expert second pass: agentic reasoning,
-          security analysis, model routing, and audit-ready evidence for engineering teams.
+          model routing, and audit-ready evidence for engineering teams.
         </p>
       </div>
 
@@ -221,12 +215,12 @@ const faqs = [
       <article class="rounded-[2rem] border border-neutral-200 bg-neutral-950 p-6 text-white shadow-xl shadow-neutral-950/20 dark:border-neutral-800">
         <Workflow class="size-8 text-cyan-300" />
         <h3 class="mt-6 text-xl font-black tracking-tight">Team workflows included</h3>
-        <p class="mt-3 leading-7 text-neutral-300">Teams, projects, SSO, API keys, audit logs, billing, and security reports live in one product surface.</p>
+        <p class="mt-3 leading-7 text-neutral-300">Teams, projects, SSO, API keys, audit logs, and billing live in one product surface.</p>
       </article>
       <article class="rounded-[2rem] border border-neutral-200 bg-white p-6 shadow-sm shadow-neutral-950/5 dark:border-neutral-800 dark:bg-neutral-950">
         <LockKeyhole class="size-8 text-brand-600" />
         <h3 class="mt-6 text-xl font-black tracking-tight">Governance without drag</h3>
-        <p class="mt-3 leading-7 text-neutral-600 dark:text-neutral-400">Keep a durable trail of review decisions, model usage, security scans, and repository events.</p>
+        <p class="mt-3 leading-7 text-neutral-600 dark:text-neutral-400">Keep a durable trail of review decisions, model usage, and repository events.</p>
       </article>
     </div>
   </section>

@@ -1,8 +1,8 @@
 # CodeCrawler
 
 An agentic, multi-provider code-review platform (CodeRabbit-style) that reviews
-pull requests and scans whole projects for security issues across GitHub,
-GitLab, and Gitea. Every user-relevant event triggers an email.
+pull requests across GitHub, GitLab, and Gitea. Every user-relevant event
+triggers an email.
 
 > **Status: M0 — Scaffold & infra.** Monorepo, dev infrastructure, shared
 > primitives, and CI are in place. Feature milestones land next per the roadmap
@@ -23,7 +23,6 @@ GitLab, and Gitea. Every user-relevant event triggers an email.
 | Cache/queue | Redis + BullMQ |
 | AI gateway | OpenRouter (hosted, metered) + direct BYOK |
 | Agent orchestration | LangGraph (`@langchain/langgraph`) |
-| Security scanning | Snyk (deps + SAST) in the worker + AI pass |
 | Payments | Mollie (team-owned flat monthly subscriptions) |
 | Email | Nodemailer + Mailpit (dev) |
 | Analytics | Plausible |
@@ -85,7 +84,7 @@ production topology lives in `docker-compose.prod.yml` + `Caddyfile`.
 ### Prerequisites
 
 - A Linux x86_64 VPS with root/sudo. ~2 vCPU / 4 GB RAM is a sensible floor for a
-  small team; raise it once Snyk + LangGraph load is known.
+  small team; raise it once LangGraph load is known.
 - A domain (e.g. `codecrawler.merckel.dev`) with **A** (and **AAAA**) DNS records
   pointing at the VPS public IP. Caddy will not issue a certificate until DNS
   resolves.
@@ -101,7 +100,7 @@ production topology lives in `docker-compose.prod.yml` + `Caddyfile`.
 | `db`     | `postgres:18-alpine`   | 5432              | `127.0.0.1:5432` (admin only) | Postgres 18 data store |
 | `redis`  | `redis:7-alpine`       | 6379              | — (internal)         | BullMQ queues + cache |
 | `api`    | `apps/api/Dockerfile`  | 3001              | — (internal)         | Hono REST + Better Auth + webhooks |
-| `worker` | `apps/worker/Dockerfile` | —               | — (internal)         | BullMQ workers, LangGraph, Snyk CLI |
+| `worker` | `apps/worker/Dockerfile` | —               | — (internal)         | BullMQ workers, LangGraph |
 | `web`    | `apps/web/Dockerfile`  | 3000              | — (internal)         | SvelteKit (adapter-node) dashboard |
 | `caddy`  | `caddy:2-alpine`       | 80, 443           | `80:80`, `443:443`   | Edge proxy, auto-TLS, routing |
 
@@ -159,7 +158,6 @@ Generate strong values for:
 - `TOKEN_ENCRYPTION_KEY` — AES-GCM key for BYOK/VCS tokens
   (`openssl rand -base64 32`). Rotating it invalidates all encrypted tokens.
 - `OPENROUTER_API_KEY` — the platform/hosted metering key.
-- `SNYK_TOKEN` + `SNYK_ORG_ID` — for the worker's Snyk CLI runs.
 - GitHub App: `GH_APP_ID`, `GH_APP_PRIVATE_KEY`, `GH_APP_CLIENT_ID`,
   `GH_APP_CLIENT_SECRET`, `GH_WEBHOOK_SECRET` (plus `GITLAB_WEBHOOK_SECRET` /
   `GITEA_WEBHOOK_SECRET` when those providers are in use).
@@ -333,7 +331,7 @@ bun run db:seed
 - SAIA / team BYOK keys — rotated by each team in **Settings → API keys**
   (Verify after rotating). No server env change needed — SAIA is team-BYOK.
 - `MOLLIE_API_KEY` — swap in the Mollie dashboard, update `.env`, restart;
-  `SNYK_TOKEN` similarly via the Snyk dashboard.
+  old key stays valid until revoked.
 - Webhook secrets (`GH_WEBHOOK_SECRET`, `GITLAB_WEBHOOK_SECRET`,
   `GITEA_WEBHOOK_SECRET`) — update the secret at the provider AND in `.env`,
   then restart; mismatches cause webhooks to be rejected (`status: ignored`).
