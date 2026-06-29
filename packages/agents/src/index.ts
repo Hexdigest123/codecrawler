@@ -20,6 +20,7 @@ import {
   type BaseMessage,
   HumanMessage,
   isAIMessage,
+  isSystemMessage,
   isToolMessage,
   SystemMessage,
 } from "@langchain/core/messages";
@@ -340,19 +341,58 @@ async function runAgent(opts: {
   // Each agent turn + its tool batch costs ~2 graph transitions, plus a final
   // turn → recursionLimit = 2 * maxSteps + 2 keeps the loop inside the cap.
   const recursionLimit = maxSteps * 2 + 2;
-  const result = (await withAgentTimeout(
-    agent.invoke({ messages: [new HumanMessage(opts.user)] }, { recursionLimit }),
-    env.REVIEW_AGENT_TIMEOUT_MS,
-  )) as { messages: BaseMessage[] };
-  const messages = result.messages ?? [];
-  let content = "";
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const m = messages[i];
-    if (isAIMessage(m)) {
-      content = extractText((m as AIMessage).content);
-      break;
+
+  // Stream (streamMode "values") so we keep the accumulated transcript even when
+  // a chatty model blows past the step cap and the run throws — the last yielded
+  // snapshot holds every message produced so far.
+  let messages: BaseMessage[] = [];
+  try {
+    const stream = await agent.stream(
+      { messages: [new HumanMessage(opts.user)] },
+      { recursionLimit, streamMode: "values" },
+    );
+    for await (const chunk of stream) {
+      const m = (chunk as { messages?: BaseMessage[] }).messages;
+      if (m && m.length > 0) messages = m;
+    }
+  } catch (e) {
+    console.warn(
+      `[agents] ${opts.modelId} hit the ${maxSteps}-step exploration cap; finalizing from gathered context. (${errMsg(e)})`,
+    );
+  }
+
+  // A "clean finish" = the model emitted a final assistant turn with no pending
+  // tool calls. Chatty models often hit the cap mid-exploration instead, leaving
+  // the last AIMessage still requesting tools — so we force a single tool-less
+  // finalization call over the transcript to guarantee a usable answer. This is
+  // what keeps a verbose model from dragging the whole review down to a
+  // degraded fallback: it always yields the structured output the caller needs.
+  const lastAi = [...messages].reverse().find(isAIMessage);
+  let content =
+    lastAi && (!lastAi.tool_calls || lastAi.tool_calls.length === 0)
+      ? extractText(lastAi.content)
+      : "";
+
+  if (!content.trim()) {
+    try {
+      const transcript = messages.filter((m) => !isSystemMessage(m));
+      const finalizeRes = (await withAgentTimeout(
+        model.invoke([
+          new SystemMessage(opts.system),
+          ...transcript,
+          new HumanMessage(
+            "Exploration budget exhausted. Using ONLY the context gathered above, produce the final answer required by the original instructions now — do not request any tools.",
+          ),
+        ]),
+        env.REVIEW_AGENT_TIMEOUT_MS,
+      )) as AIMessage;
+      messages = [...messages, finalizeRes];
+      content = extractText(finalizeRes.content);
+    } catch (e2) {
+      console.warn(`[agents] ${opts.modelId} finalization call failed: ${errMsg(e2)}`);
     }
   }
+
   const usage = await summarizeMessagesUsage(messages, opts.modelId, opts.orgId);
   const steps = messages.filter(isAIMessage).length;
   const toolCalls = messages.filter(isToolMessage).length;
@@ -573,9 +613,27 @@ function prRefCandidates(input: ReviewInput, pr: PR): string[] {
   return Array.from(new Set(refs));
 }
 
-async function git(args: string[], cwd: string, token?: string): Promise<void> {
-  const gitArgs = token ? ["-c", `http.extraheader=Authorization: Bearer ${token}`, ...args] : args;
-  await execFileAsync("git", gitArgs, { cwd, timeout: 120_000, maxBuffer: 1024 * 1024 });
+async function git(args: string[], cwd: string): Promise<void> {
+  await execFileAsync("git", args, { cwd, timeout: 120_000, maxBuffer: 1024 * 1024 });
+}
+
+/**
+ * Embed the VCS token in the fetch URL as the username. GitHub (fine-grained and
+ * classic PATs, OAuth + App installation tokens), GitLab, and Gitea all accept
+ * the credential this way over HTTPS — unlike the `Authorization: Bearer` extra
+ * header, which GitHub rejects for fine-grained PATs. The token lives only in
+ * the argv of the one-shot fetch, never in .git/config.
+ */
+function authenticatedRepoUrl(input: ReviewInput, token?: string): string {
+  const bare = reviewRepoUrl(input);
+  if (!token) return bare;
+  try {
+    const u = new URL(bare);
+    u.username = encodeURIComponent(token);
+    return u.toString();
+  } catch {
+    return bare;
+  }
 }
 
 async function materializePrCheckout(
@@ -586,11 +644,13 @@ async function materializePrCheckout(
   if (!input.auth) throw new Error("missing vcs auth for checkout");
   await fs.mkdir(targetPath, { recursive: true });
   await git(["init"], targetPath);
-  await git(["remote", "add", "origin", reviewRepoUrl(input)], targetPath);
+  // Fetch directly from the authenticated URL rather than adding a named remote,
+  // so the token is never written to .git/config in the (ephemeral) checkout.
+  const url = authenticatedRepoUrl(input, input.auth.token);
   let lastError = "unknown fetch error";
   for (const ref of prRefCandidates(input, pr)) {
     try {
-      await git(["fetch", "--depth=1", "origin", ref], targetPath, input.auth.token);
+      await git(["fetch", "--depth=1", url, ref], targetPath);
       await git(["checkout", "--detach", "FETCH_HEAD"], targetPath);
       return;
     } catch (e) {
@@ -1243,7 +1303,20 @@ function planFanOut(state: State): string | Send[] {
   const units = state.units ?? [];
   if (units.length === 0) return "SYNTHESIZE";
   const input = state.input;
-  return units.map((u) => new Send("REVIEW", { currentUnit: u, input }));
+  // LangGraph Send payloads are how parallel branches receive state. The shared
+  // checkout context (repoPath/repoMap) and resolved depth must be carried into
+  // each reviewer branch explicitly, or the reviewer agents can't see the
+  // checkout and silently fall back to the static diff-only path.
+  return units.map(
+    (u) =>
+      new Send("REVIEW", {
+        currentUnit: u,
+        input,
+        repoPath: state.repoPath,
+        repoMap: state.repoMap,
+        depth: state.depth,
+      }),
+  );
 }
 
 let defaultSaver: PostgresSaver | null = null;
