@@ -1,19 +1,19 @@
 <script lang="ts">
-import { goto } from "$app/navigation";
-import ArrowLeft from "@lucide/svelte/icons/arrow-left";
-import { ApiError, api } from "$lib/api";
-import type { PageProps } from "./$types";
+  import { goto } from "$app/navigation";
+  import ArrowLeft from "@lucide/svelte/icons/arrow-left";
+  import { ApiError, api } from "$lib/api";
+  import { toastError } from "$lib/toast.svelte";
+  import type { PageProps } from "./$types";
 
-type RepoItem = { id: number; fullName: string; private: boolean };
-type ReposResponse = { items: RepoItem[]; connected: boolean };
+  type RepoItem = { id: number; fullName: string; private: boolean };
+  type ReposResponse = { items: RepoItem[]; connected: boolean };
 
-let { params }: PageProps = $props();
+  let { params }: PageProps = $props();
 
-let name = $state("");
-let repoFullName = $state("");
-let provider = $state("github");
-let error = $state<string | null>(null);
-let loading = $state(false);
+  let name = $state("");
+  let repoFullName = $state("");
+  let provider = $state("github");
+  let loading = $state(false);
 
 const PROVIDER_LABEL: Record<string, string> = {
   github: "GitHub",
@@ -72,27 +72,26 @@ function onRepoSelect(event: Event) {
   if (name.trim().length === 0) name = seg;
 }
 
-async function submit(event: SubmitEvent) {
-  event.preventDefault();
-  if (disabled) return;
-  error = null;
-  loading = true;
-  try {
-    await api(`/api/teams/${params.id}/projects`, {
-      method: "POST",
-      body: JSON.stringify({
-        name: name.trim(),
-        provider,
-        repoFullName: repoFullName.trim(),
-      }),
-    });
-    await goto(`/teams/${params.id}`);
-  } catch (err) {
-    error = err instanceof ApiError ? err.message : "Could not connect repository.";
-  } finally {
-    loading = false;
+  async function submit(event: SubmitEvent) {
+    event.preventDefault();
+    if (disabled) return;
+    loading = true;
+    try {
+      await api(`/api/teams/${params.id}/projects`, {
+        method: "POST",
+        body: JSON.stringify({
+          name: name.trim(),
+          provider,
+          repoFullName: repoFullName.trim(),
+        }),
+      });
+      await goto(`/teams/${params.id}`);
+    } catch (err) {
+      toastError(err instanceof ApiError ? err.message : "Could not connect repository.");
+    } finally {
+      loading = false;
+    }
   }
-}
 </script>
 
 <svelte:head>
@@ -185,10 +184,6 @@ async function submit(event: SubmitEvent) {
         />
         <span class="text-xs text-neutral-500">For example, <code>acme/api</code>.</span>
       </label>
-    {/if}
-
-    {#if error}
-      <p role="alert" class="text-sm text-red-600 dark:text-red-400">{error}</p>
     {/if}
 
     <button

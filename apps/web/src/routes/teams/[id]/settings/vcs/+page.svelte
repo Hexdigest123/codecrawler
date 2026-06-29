@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ApiError, api } from "$lib/api";
+  import { toastError, toastSuccess } from "$lib/toast.svelte";
   import type { PageProps } from "./$types";
   import type { VcsConnection } from "./+page";
 
@@ -51,8 +52,6 @@
   let token = $state("");
   let baseUrl = $state("");
   let adding = $state(false);
-  let addError = $state<string | null>(null);
-  let success = $state<string | null>(null);
 
   const showBaseUrl = $derived(provider === "gitea");
   const canSubmit = $derived(
@@ -68,8 +67,6 @@
   async function addConnection(event: SubmitEvent) {
     event.preventDefault();
     if (!canSubmit) return;
-    addError = null;
-    success = null;
     adding = true;
     try {
       const body: { token: string; orgId: string; baseUrl?: string } = {
@@ -83,10 +80,10 @@
       });
       token = "";
       baseUrl = "";
-      success = `${providerLabel(provider)} connection added.`;
+      toastSuccess(`${providerLabel(provider)} connection added.`);
       await refetchConnections();
     } catch (err) {
-      addError = err instanceof ApiError ? err.message : "Could not add connection.";
+      toastError(err instanceof ApiError ? err.message : "Could not add connection.");
     } finally {
       adding = false;
     }
@@ -149,15 +146,8 @@
 
       <p class="max-w-2xl text-xs text-neutral-500">
         GitHub connections normally use the GitHub App; for testing you can paste a personal access
-        token. GitLab/Gitea use a personal/team token.
+        token. GitLab/Gitea use a personal/team         token.
       </p>
-
-      {#if addError}
-        <p role="alert" class="text-sm text-red-600 dark:text-red-400">{addError}</p>
-      {/if}
-      {#if success}
-        <p role="status" class="text-sm text-green-600 dark:text-green-400">{success}</p>
-      {/if}
 
       <div class="flex items-center gap-4">
         <button

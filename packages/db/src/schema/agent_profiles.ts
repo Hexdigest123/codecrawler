@@ -1,6 +1,6 @@
 import { index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { organization } from "./auth";
-import { coverageStrategyEnum, graphTypeEnum } from "./enums";
+import { coverageStrategyEnum, graphTypeEnum, reviewDepthEnum } from "./enums";
 import { projects } from "./projects";
 
 export const agentProfiles = pgTable(
@@ -12,6 +12,9 @@ export const agentProfiles = pgTable(
     graphType: graphTypeEnum("graph_type").notNull(),
     nodeModels: jsonb("node_models").notNull().default({}),
     coverageStrategy: coverageStrategyEnum("coverage_strategy").default("by_filegroup"),
+    // Team default depth used when REVIEW_AGENT_MODE=auto and the trigger did
+    // not pin a tier explicitly (e.g. a PR-opened webhook).
+    defaultDepth: reviewDepthEnum("default_depth").default("quick"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()

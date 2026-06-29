@@ -1,28 +1,27 @@
 <script lang="ts">
-import { authClient } from "@codecrawler/auth/client";
-import { goto } from "$app/navigation";
-import Brand from "$lib/components/Brand.svelte";
+  import { authClient } from "@codecrawler/auth/client";
+  import { goto } from "$app/navigation";
+  import Brand from "$lib/components/Brand.svelte";
+  import { toastError } from "$lib/toast.svelte";
 
-let email = $state("");
-let password = $state("");
-let error = $state<string | null>(null);
-let loading = $state(false);
+  let email = $state("");
+  let password = $state("");
+  let loading = $state(false);
 
-let disabled = $derived(loading || email.length === 0 || password.length === 0);
+  let disabled = $derived(loading || email.length === 0 || password.length === 0);
 
-async function submit(event: SubmitEvent) {
-  event.preventDefault();
-  if (disabled) return;
-  error = null;
-  loading = true;
-  const { error: err } = await authClient.signIn.email({ email, password });
-  loading = false;
-  if (err) {
-    error = err.message ?? "Sign in failed.";
-    return;
+  async function submit(event: SubmitEvent) {
+    event.preventDefault();
+    if (disabled) return;
+    loading = true;
+    const { error: err } = await authClient.signIn.email({ email, password });
+    loading = false;
+    if (err) {
+      toastError(err.message ?? "Sign in failed.");
+      return;
+    }
+    await goto("/dashboard");
   }
-  await goto("/dashboard");
-}
 </script>
 
 <svelte:head>
@@ -62,10 +61,6 @@ async function submit(event: SubmitEvent) {
         placeholder="••••••••"
       />
     </label>
-
-    {#if error}
-      <p role="alert" class="text-sm text-red-600 dark:text-red-400">{error}</p>
-    {/if}
 
     <button
       type="submit"

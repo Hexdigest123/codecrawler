@@ -9,7 +9,13 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import { agentProfiles } from "./agent_profiles";
-import { billingModeEnum, reviewCategoryEnum, reviewStatusEnum, severityEnum } from "./enums";
+import {
+  billingModeEnum,
+  reviewCategoryEnum,
+  reviewDepthEnum,
+  reviewStatusEnum,
+  severityEnum,
+} from "./enums";
 import { projects } from "./projects";
 
 export const pullRequests = pgTable(
@@ -43,6 +49,12 @@ export const reviews = pgTable(
     status: reviewStatusEnum("status").notNull().default("pending"),
     walkthrough: text("walkthrough"),
     billingMode: billingModeEnum("billing_mode"),
+    // Agentic depth tier this run executed under ("static"|"quick"|"deep").
+    depth: reviewDepthEnum("depth").notNull().default("static"),
+    // Observability: how many agent ReAct steps ran and how many tool calls
+    // were made. Zero for the static path.
+    agentSteps: integer("agent_steps").notNull().default(0),
+    toolCalls: integer("tool_calls").notNull().default(0),
     creditsCost: numeric("credits_cost").notNull().default("0"),
     tokenSpendUsd: numeric("token_spend_usd").notNull().default("0"),
     modelIds: text("model_ids").array(),

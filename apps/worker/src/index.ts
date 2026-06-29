@@ -114,62 +114,64 @@ async function notifyQuotaIfCrossed(
   }
 }
 
-const worker = new Worker(
-  QUEUE_NAMES.reviews,
-  async (job) => {
-    const data = job.data as ReviewJobData;
-    const reviewId = data.reviewId;
-    const triggerEmail = data.triggerEmail;
+async function processReviewJob(job: { data: ReviewJobData }): Promise<ReviewResult> {
+  const data = job.data;
+  const reviewId = data.reviewId;
+  const triggerEmail = data.triggerEmail;
 
-    try {
-      const result: ReviewResult = await runReview(data);
+  try {
+    const result: ReviewResult = await runReview(data);
 
-      if (result.status === "completed") {
-        const credits = Number(result.creditsCost ?? 0);
-        if (Number.isFinite(credits) && credits > 0) {
-          try {
-            await recordUsage(data.orgId, "pr_review", credits);
-          } catch (err) {
-            console.error("[worker] recordUsage failed", err);
-          }
-          await notifyQuotaIfCrossed(data.orgId, "pr_review", triggerEmail);
+    if (result.status === "completed") {
+      const credits = Number(result.creditsCost ?? 0);
+      if (Number.isFinite(credits) && credits > 0) {
+        try {
+          await recordUsage(data.orgId, "pr_review", credits);
+        } catch (err) {
+          console.error("[worker] recordUsage failed", err);
         }
-        if (triggerEmail) {
-          await enqueueEmail("review-completed", triggerEmail, {
-            reviewId,
-            walkthrough: result.walkthrough ?? "",
-          }).catch((err: unknown) => {
-            console.error("[worker] review-completed email failed", err);
-          });
-        }
-        return result;
+        await notifyQuotaIfCrossed(data.orgId, "pr_review", triggerEmail);
       }
-
       if (triggerEmail) {
-        await enqueueEmail("review-failed", triggerEmail, {
+        await enqueueEmail("review-completed", triggerEmail, {
           reviewId,
-          error: result.error ?? "Review did not complete",
+          walkthrough: result.walkthrough ?? "",
         }).catch((err: unknown) => {
-          console.error("[worker] review-failed email failed", err);
+          console.error("[worker] review-completed email failed", err);
         });
       }
       return result;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Worker error";
-      await markReviewFailed(reviewId, message);
-      if (triggerEmail) {
-        await enqueueEmail("review-failed", triggerEmail, {
-          reviewId,
-          error: message,
-        }).catch((emailErr: unknown) => {
-          console.error("[worker] review-failed email failed", emailErr);
-        });
-      }
-      throw err;
     }
-  },
-  { connection: connection as never, concurrency: 2 },
-);
+
+    if (triggerEmail) {
+      await enqueueEmail("review-failed", triggerEmail, {
+        reviewId,
+        error: result.error ?? "Review did not complete",
+      }).catch((err: unknown) => {
+        console.error("[worker] review-failed email failed", err);
+      });
+    }
+    return result;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Worker error";
+    await markReviewFailed(reviewId, message);
+    if (triggerEmail) {
+      await enqueueEmail("review-failed", triggerEmail, {
+        reviewId,
+        error: message,
+      }).catch((emailErr: unknown) => {
+        console.error("[worker] review-failed email failed", emailErr);
+      });
+    }
+    throw err;
+  }
+}
+
+// Quick/static reviews: higher concurrency, each job is short.
+const worker = new Worker(QUEUE_NAMES.reviews, processReviewJob, {
+  connection: connection as never,
+  concurrency: 2,
+});
 
 worker.on("failed", (job, err) => {
   console.error(`[worker] reviews job ${job?.id ?? "?"} failed`, err);
@@ -177,6 +179,22 @@ worker.on("failed", (job, err) => {
 
 worker.on("ready", () => {
   console.log(`[worker] reviews worker registered on queue "${QUEUE_NAMES.reviews}"`);
+});
+
+// Deep reviews run on an isolated queue so the long agentic loops (12 steps ×
+// multiple agents) can't starve quick reviews. Lower concurrency since each
+// deep run holds a worker slot for much longer.
+const deepWorker = new Worker(QUEUE_NAMES.reviewsDeep, processReviewJob, {
+  connection: connection as never,
+  concurrency: 1,
+});
+
+deepWorker.on("failed", (job, err) => {
+  console.error(`[worker] reviews-deep job ${job?.id ?? "?"} failed`, err);
+});
+
+deepWorker.on("ready", () => {
+  console.log(`[worker] reviews-deep worker registered on queue "${QUEUE_NAMES.reviewsDeep}"`);
 });
 
 const paymentsWorker = new Worker(
@@ -300,6 +318,7 @@ async function shutdown(signal: string) {
   shuttingDown = true;
   console.log(`[worker] received ${signal}, shutting down`);
   await worker.close().catch(() => undefined);
+  await deepWorker.close().catch(() => undefined);
   await paymentsWorker.close().catch(() => undefined);
   await scheduledWorker.close().catch(() => undefined);
   await paymentsQueue.close().catch(() => undefined);

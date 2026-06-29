@@ -6,16 +6,22 @@ import LayoutDashboard from "@lucide/svelte/icons/layout-dashboard";
 import LogIn from "@lucide/svelte/icons/log-in";
 import LogOut from "@lucide/svelte/icons/log-out";
 import Moon from "@lucide/svelte/icons/moon";
-import Plus from "@lucide/svelte/icons/plus";
+import Shield from "@lucide/svelte/icons/shield";
 import Sun from "@lucide/svelte/icons/sun";
+import UserCircle from "@lucide/svelte/icons/user-circle";
 import UserPlus from "@lucide/svelte/icons/user-plus";
 import Brand from "$lib/components/Brand.svelte";
+import Toasts from "$lib/components/Toasts.svelte";
 import { toggleTheme } from "$lib/theme";
 
 let { children } = $props();
 
 const session = authClient.useSession();
 let signingOut = $state(false);
+
+const isAdmin = $derived(
+  ($session.data?.user as { role?: string } | undefined)?.role === "admin",
+);
 
 async function signOut() {
   signingOut = true;
@@ -52,6 +58,17 @@ async function signOut() {
         <Sun class="hidden size-4 dark:block" />
       </button>
       {#if $session.data}
+        {#if isAdmin}
+          <a
+            href="/admin"
+            class="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 hover:bg-neutral-100 sm:px-3 dark:hover:bg-neutral-900"
+            aria-label="Admin"
+            title="Admin dashboard"
+          >
+            <Shield class="size-4" />
+            <span class="hidden sm:inline">Admin</span>
+          </a>
+        {/if}
         <a
           href="/dashboard"
           class="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 hover:bg-neutral-100 sm:px-3 dark:hover:bg-neutral-900"
@@ -61,19 +78,13 @@ async function signOut() {
           <span class="hidden sm:inline">Dashboard</span>
         </a>
         <a
-          href="/teams/new"
-          class="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 hover:bg-neutral-100 sm:px-3 dark:hover:bg-neutral-900"
-          aria-label="New team"
-        >
-          <Plus class="size-4" />
-          <span class="hidden sm:inline">New team</span>
-        </a>
-        <a
           href="/account"
-          class="hidden rounded-md px-3 py-1.5 hover:bg-neutral-100 sm:inline dark:hover:bg-neutral-900"
+          class="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 hover:bg-neutral-100 sm:px-3 dark:hover:bg-neutral-900"
+          aria-label="Account"
           title={$session.data.user?.email}
         >
-          {$session.data.user?.email}
+          <UserCircle class="size-4" />
+          <span class="hidden sm:inline">Account</span>
         </a>
         <button
           type="button"
@@ -110,3 +121,5 @@ async function signOut() {
 <main id="main" class="mx-auto max-w-6xl px-4 py-10">
   {@render children()}
 </main>
+
+<Toasts />

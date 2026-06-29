@@ -24,7 +24,7 @@ export const PLAN_LIMITS: Record<PlanId, PlanLimits> = {
   free: {
     hostedReviewsPerDay: 0,
     membersPerTeam: 5,
-    teamsPerUser: 1,
+    teamsPerUser: 3,
     customSso: false,
     maxReviewerWeight: null,
     hostedAllowed: false,

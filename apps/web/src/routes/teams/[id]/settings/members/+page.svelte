@@ -1,6 +1,7 @@
 <script lang="ts">
 import { goto } from "$app/navigation";
 import { ApiError, api } from "$lib/api";
+import { toastError, toastSuccess } from "$lib/toast.svelte";
 import { PLAN_LABEL, type Member, type MemberRole, type PlanId } from "$lib/types";
 import type { PageProps } from "./$types";
 
@@ -24,11 +25,8 @@ const currentUserId = $derived(data.currentUserId);
 let inviteEmail = $state("");
 let inviteRole = $state<"member" | "admin">("member");
 let inviting = $state(false);
-let inviteError = $state<string | null>(null);
-let inviteInfo = $state<string | null>(null);
 
 let busyUserId = $state<string | null>(null);
-let actionError = $state<string | null>(null);
 
 const ROLE_BADGE_STYLES: Record<MemberRole, string> = {
   owner: "bg-brand-50 text-brand-700 dark:bg-brand-950 dark:text-brand-300",
@@ -64,22 +62,19 @@ async function sendInvite(event: SubmitEvent) {
   const email = inviteEmail.trim();
   if (email.length === 0) return;
   inviting = true;
-  inviteError = null;
-  inviteInfo = null;
   try {
     await api<{ invitationId: string }>(`/api/teams/${data.teamId}/invite`, {
       method: "POST",
       body: JSON.stringify({ email, role: inviteRole }),
     });
-    inviteInfo = `Invitation sent to ${email}. It is pending until they accept.`;
+    toastSuccess(`Invitation sent to ${email}. It is pending until they accept.`);
     inviteEmail = "";
     inviteRole = "member";
   } catch (err) {
     if (err instanceof ApiError && err.code === "cap_reached") {
-      inviteError =
-        "Your team has reached its member cap. Upgrade the plan to add more members.";
+      toastError("Your team has reached its member cap. Upgrade the plan to add more members.");
     } else {
-      inviteError = err instanceof ApiError ? err.message : "Could not send the invitation.";
+      toastError(err instanceof ApiError ? err.message : "Could not send the invitation.");
     }
   } finally {
     inviting = false;
@@ -89,7 +84,6 @@ async function sendInvite(event: SubmitEvent) {
 async function changeRole(member: Member, newRole: MemberRole) {
   if (newRole === member.role || busyUserId) return;
   busyUserId = member.userId;
-  actionError = null;
   try {
     await api(`/api/teams/${data.teamId}/members/${member.userId}`, {
       method: "PATCH",
@@ -97,7 +91,7 @@ async function changeRole(member: Member, newRole: MemberRole) {
     });
     await refreshMembers();
   } catch (err) {
-    actionError = err instanceof ApiError ? err.message : "Could not update the role.";
+    toastError(err instanceof ApiError ? err.message : "Could not update the role.");
   } finally {
     busyUserId = null;
   }
@@ -106,12 +100,11 @@ async function changeRole(member: Member, newRole: MemberRole) {
 async function removeMember(member: Member) {
   if (!confirm(`Remove ${member.name || member.email} from the team?`)) return;
   busyUserId = member.userId;
-  actionError = null;
   try {
     await api(`/api/teams/${data.teamId}/members/${member.userId}`, { method: "DELETE" });
     await refreshMembers();
   } catch (err) {
-    actionError = err instanceof ApiError ? err.message : "Could not remove the member.";
+    toastError(err instanceof ApiError ? err.message : "Could not remove the member.");
   } finally {
     busyUserId = null;
   }
@@ -125,14 +118,13 @@ async function leaveTeam() {
   )
     return;
   busyUserId = currentUserId;
-  actionError = null;
   try {
     await api(`/api/teams/${data.teamId}/members/${currentUserId}/leave`, {
       method: "POST",
     });
     await goto("/dashboard");
   } catch (err) {
-    actionError = err instanceof ApiError ? err.message : "Could not leave the team.";
+    toastError(err instanceof ApiError ? err.message : "Could not leave the team.");
     busyUserId = null;
   }
 }
@@ -148,16 +140,15 @@ async function deleteTeam() {
   );
   if (typed === null) return;
   if (typed.trim().toLowerCase() !== name.trim().toLowerCase()) {
-    actionError = "Team name did not match. Deletion cancelled.";
+    toastError("Team name did not match. Deletion cancelled.");
     return;
   }
   deletingTeam = true;
-  actionError = null;
   try {
     await api(`/api/teams/${data.teamId}`, { method: "DELETE" });
     await goto("/dashboard");
   } catch (err) {
-    actionError = err instanceof ApiError ? err.message : "Could not delete the team.";
+    toastError(err instanceof ApiError ? err.message : "Could not delete the team.");
     deletingTeam = false;
   }
 }
@@ -233,29 +224,7 @@ async function deleteTeam() {
           </button>
         </div>
       </form>
-      {#if inviteInfo}
-        <p
-          role="status"
-          class="mt-3 text-sm text-green-700 dark:text-green-300"
-        >
-          {inviteInfo}
-        </p>
-      {/if}
-      {#if inviteError}
-        <p role="alert" class="mt-3 text-sm text-red-600 dark:text-red-400">
-          {inviteError}
-        </p>
-      {/if}
     </section>
-  {/if}
-
-  {#if actionError}
-    <p
-      role="alert"
-      class="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300"
-    >
-      {actionError}
-    </p>
   {/if}
 
   <section

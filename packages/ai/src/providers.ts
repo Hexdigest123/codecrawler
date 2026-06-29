@@ -1,4 +1,5 @@
 import type { ApiKeyProvider, ProviderId } from "@codecrawler/shared";
+import { WEIGHT_MIN } from "./weight";
 
 export const SAIA_BASE_URL = "https://chat-ai.academiccloud.de/v1";
 export const SAIA_PREFIX = "saia/";
@@ -113,11 +114,8 @@ export function saiaVendorFromId(apiModelId: string): string {
   return "SAIA";
 }
 
-export function saiaWeightForModel(paramB: number): number {
-  if (paramB >= 300) return 4;
-  if (paramB >= 60) return 3;
-  if (paramB >= 20) return 2;
-  return 1;
+export function saiaWeightForModel(_paramB: number): number {
+  return WEIGHT_MIN;
 }
 
 export interface SaiaKnownModel {

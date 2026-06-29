@@ -7,6 +7,7 @@
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import { ApiError, api } from "$lib/api";
   import type {
+    DepthTier,
     OpenPullRequest,
     ProjectReviewListItem,
     TriggerReviewResponse,
@@ -41,6 +42,9 @@
   let reviewingNumber = $state<number | null>(null);
   let reviewError = $state<{ n: number; msg: string } | null>(null);
   let freeByokOnly = $state(false);
+  // Depth applied to manually-triggered reviews. Defaults to the agentic quick
+  // tier; deep is plan-gated server-side (the error surfaces per-PR below).
+  let triggerDepth = $state<DepthTier>("quick");
 
   async function refreshOpen() {
     loadingOpen = true;
@@ -65,7 +69,7 @@
     try {
       const trigger = await api<TriggerReviewResponse>(
         `/api/projects/${data.projectId}/pulls/${n}/review`,
-        { method: "POST", body: JSON.stringify({}) },
+        { method: "POST", body: JSON.stringify({ depth: triggerDepth }) },
       );
       await goto(`/reviews/${trigger.reviewId}`);
     } catch (err) {
@@ -144,6 +148,25 @@
         <p class="mt-1 text-xs text-neutral-500">
           Triggered reviews run the full LangGraph pipeline against the real PR diff.
         </p>
+      </div>
+      <div
+        class="flex items-center gap-1 rounded-md border border-neutral-300 p-0.5 text-xs dark:border-neutral-700"
+        role="group"
+        aria-label="Review depth"
+      >
+        <span class="px-1.5 text-neutral-500">Depth</span>
+        {#each ["quick", "deep"] as tier (tier)}
+          <button
+            type="button"
+            onclick={() => (triggerDepth = tier as DepthTier)}
+            aria-pressed={triggerDepth === tier}
+            class="rounded px-2 py-1 font-medium transition {triggerDepth === tier
+              ? "bg-brand-600 text-white"
+              : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"}"
+          >
+            {tier}
+          </button>
+        {/each}
       </div>
       <button
         type="button"

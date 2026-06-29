@@ -15,17 +15,19 @@ import {
 } from "@codecrawler/billing";
 import { client, db, schema } from "@codecrawler/db";
 import { enqueueEmail } from "@codecrawler/email";
-import { makeQueue } from "@codecrawler/queue";
-import { checkQuota, computeReviewCost, getTeamPlan, getUsage } from "@codecrawler/quotas";
+import { makeQueue, QUEUE_NAMES } from "@codecrawler/queue";
+import { checkQuota, getTeamPlan, getUsage, projectReviewCost } from "@codecrawler/quotas";
 import {
   DEFAULT_COVERAGE_STRATEGY,
   DEFAULT_NODE_MODELS,
+  type DepthTier,
   decryptSecret,
   encryptSecret,
   env,
   getPlanLimits,
   type PlanId,
   planRank,
+  resolveDepthFromMode,
 } from "@codecrawler/shared";
 import type { VcsAuth } from "@codecrawler/vcs";
 import {
@@ -36,7 +38,7 @@ import {
   verifyGitlabWebhook,
 } from "@codecrawler/vcs";
 import { zValidator } from "@hono/zod-validator";
-import { and, desc, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, count, desc, eq, inArray, isNull, ne, sql, sum } from "drizzle-orm";
 import type { Context } from "hono";
 import { Hono, type MiddlewareHandler } from "hono";
 import { cors } from "hono/cors";
@@ -156,6 +158,62 @@ async function getOrgPlan(orgId: string): Promise<PlanId> {
   return (sub?.plan ?? "free") as PlanId;
 }
 
+async function isAdmin(userId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ role: schema.user.role })
+    .from(schema.user)
+    .where(eq(schema.user.id, userId))
+    .limit(1);
+  return row?.role === "admin";
+}
+
+async function requireAdmin(c: Context): Promise<SessionUser> {
+  const user = c.get("user");
+  if (!(await isAdmin(user.id))) {
+    throw new ApiError(403, "admin_required", "Administrator access required");
+  }
+  return user;
+}
+
+const requireAdminMiddleware: MiddlewareHandler = async (c, next) => {
+  await requireAdmin(c);
+  await next();
+};
+
+async function getAppSettings() {
+  const [row] = await db
+    .select()
+    .from(schema.appSettings)
+    .where(eq(schema.appSettings.id, "singleton"))
+    .limit(1);
+  if (row) {
+    return row;
+  }
+  // Bootstraps the singleton if missing (e.g. migration ran before seed).
+  const [created] = await db
+    .insert(schema.appSettings)
+    .values({ id: "singleton" })
+    .onConflictDoNothing({ target: schema.appSettings.id })
+    .returning();
+  return (
+    created ?? {
+      id: "singleton",
+      signupMode: "open",
+      allowedDomains: [],
+      paymentsEnabled: true,
+      updatedAt: new Date(),
+    }
+  );
+}
+
+async function getAdminEmails(): Promise<string[]> {
+  const rows = await db
+    .select({ email: schema.user.email })
+    .from(schema.user)
+    .where(eq(schema.user.role, "admin"));
+  return rows.map((r) => r.email).filter((e): e is string => Boolean(e));
+}
+
 async function getTeamName(orgId: string): Promise<string> {
   const [org] = await db
     .select({ name: schema.organization.name })
@@ -230,6 +288,7 @@ function isPublicApiPath(path: string): boolean {
   if (path === "/api/webhooks" || path.startsWith("/api/webhooks/")) return true;
   if (path === "/api/payments" || path.startsWith("/api/payments/")) return true;
   if (path === "/api/sso/resolve") return true;
+  if (path === "/api/signup-config") return true;
   return false;
 }
 
@@ -451,7 +510,6 @@ function pingRedis(): Promise<"ok" | "fail"> {
 
 const createTeamSchema = z.object({
   name: z.string().min(1),
-  slug: z.string().min(1).optional(),
 });
 
 const createProjectSchema = z.object({
@@ -470,6 +528,7 @@ const createApiKeySchema = z.object({
 const putAgentProfileSchema = z.object({
   nodeModels: z.record(z.string(), z.string()).optional(),
   coverageStrategy: z.enum(COVERAGE_VALUES).optional(),
+  defaultDepth: z.enum(["static", "quick", "deep"]).optional(),
 });
 
 const putGraphNodeSchema = z.object({
@@ -484,6 +543,7 @@ const vcsConnectSchema = z.object({
 
 const triggerReviewSchema = z.object({
   repoPath: z.string().min(1).optional(),
+  depth: z.enum(["static", "quick", "deep"]).optional(),
   synthetic: z
     .object({
       pr: z.unknown(),
@@ -540,19 +600,29 @@ const BILLING_PLAN_CATALOG = [
     id: "free" as const,
     label: "Free",
     priceEur: 0,
-    features: ["BYOK only", "3 PR reviews / day", "5 members / team"],
+    features: [
+      "BYOK exclusively — bring your own API keys",
+      "Unlimited reviews via BYOK",
+      "3 teams",
+      "5 members / team",
+    ],
   },
   {
     id: "plus" as const,
     label: "Plus",
     priceEur: 29,
-    features: ["50 PR reviews / day", "5 members / team"],
+    features: ["50 hosted reviews / day", "Hosted + BYOK", "Unlimited teams", "5 members / team"],
   },
   {
     id: "pro" as const,
     label: "Pro",
     priceEur: 99,
-    features: ["Unlimited reviews", "Custom SSO", "Any model weight", "Unlimited members"],
+    features: [
+      "Unlimited hosted reviews",
+      "Custom SSO",
+      "Any model weight",
+      "Unlimited teams & members",
+    ],
   },
 ];
 
@@ -584,6 +654,45 @@ async function resolveOrgProfile(orgId: string, graphType: "pr_review") {
     )
     .limit(1);
   return rows[0] ?? null;
+}
+
+/**
+ * Pick the depth tier for a run, honouring an explicit request (a `/codecrawler
+ * deep` comment or the manual-trigger body) over the team's agent-profile
+ * default, then the global REVIEW_AGENT_MODE. Always funnelled through
+ * {@link resolveDepthFromMode} so an "off" global mode forces the static path.
+ */
+function pickDepthTier(requested?: DepthTier | null, profileDefault?: DepthTier | null): DepthTier {
+  if (requested === "static" || requested === "quick" || requested === "deep") {
+    return resolveDepthFromMode(requested);
+  }
+  if (profileDefault === "static" || profileDefault === "quick" || profileDefault === "deep") {
+    return resolveDepthFromMode(profileDefault);
+  }
+  return resolveDepthFromMode();
+}
+
+/**
+ * Resolve the run's final depth tier + which queue it belongs on. Deep reviews
+ * require Plus/Pro; webhook/comment triggers can't return a 402, so an
+ * ineligible deep request silently downgrades to quick (the manual endpoint
+ * gates explicitly before calling this). Deep runs land on a dedicated
+ * `reviews:deep` queue so the long agent loops can't starve quick reviews.
+ */
+async function resolveEnqueueDepth(
+  orgId: string,
+  requested?: DepthTier | null,
+  profileDefault?: DepthTier | null,
+): Promise<{ depth: DepthTier; queueName: string }> {
+  let depth = pickDepthTier(requested, profileDefault);
+  if (depth === "deep") {
+    const plan = await getTeamPlan(orgId);
+    if (planRank(plan) < planRank("plus")) {
+      depth = "quick";
+    }
+  }
+  const queueName = depth === "deep" ? QUEUE_NAMES.reviewsDeep : QUEUE_NAMES.reviews;
+  return { depth, queueName };
 }
 
 async function enqueueVcsReview(
@@ -745,7 +854,12 @@ async function upsertPullAndEnqueueReview(opts: {
   projectId: string;
   prNumber: number;
   repoFullName: string;
-  profile: { id?: string; nodeModels: unknown; coverageStrategy: string | null } | null;
+  profile: {
+    id?: string;
+    nodeModels: unknown;
+    coverageStrategy: string | null;
+    defaultDepth?: DepthTier | null;
+  } | null;
   prMeta?: {
     title?: string | null;
     author?: string | null;
@@ -761,6 +875,7 @@ async function upsertPullAndEnqueueReview(opts: {
   provider?: "github" | "gitlab" | "gitea";
   installationId?: number;
   source?: "webhook" | "manual" | "synthetic" | "comment";
+  depth?: DepthTier | null;
 }): Promise<string> {
   const provider = opts.provider ?? "github";
   const [owner, ...rest] = opts.repoFullName.split("/");
@@ -773,6 +888,13 @@ async function upsertPullAndEnqueueReview(opts: {
 
   const source: "webhook" | "manual" | "synthetic" | "comment" =
     opts.source ?? (opts.syntheticPr ? "synthetic" : "manual");
+
+  // Resolve the depth tier + target queue (deep → dedicated reviews:deep queue,
+  // plan-gated to Plus/Pro). Synthetic runs stay on the static path so local
+  // synthetic smoke tests never touch paid queues.
+  const { depth: resolvedDepth, queueName } = opts.syntheticPr
+    ? { depth: "static" as DepthTier, queueName: QUEUE_NAMES.reviews }
+    : await resolveEnqueueDepth(opts.orgId, opts.depth ?? null, opts.profile?.defaultDepth ?? null);
 
   // Resolve VCS auth now (App → stored connection → dev PAT).
   const auth = await resolveReviewAuth({
@@ -852,6 +974,7 @@ async function upsertPullAndEnqueueReview(opts: {
       profileId: opts.profile?.id ?? null,
       status: "running",
       billingMode: "hosted",
+      depth: resolvedDepth,
       source,
     })
     .returning();
@@ -865,6 +988,7 @@ async function upsertPullAndEnqueueReview(opts: {
     auth: auth ?? undefined,
     repoPath: opts.repoPath,
     coverageStrategy,
+    depth: resolvedDepth,
     reviewId: review.id,
     profileId: opts.profile?.id,
     triggerUserId: opts.triggerUserId,
@@ -873,8 +997,8 @@ async function upsertPullAndEnqueueReview(opts: {
     ...(opts.syntheticPr ? { syntheticPr: opts.syntheticPr as never } : {}),
   };
 
-  const queue = makeQueue("reviews");
-  await queue.add("review", jobData);
+  const queue = makeQueue(queueName);
+  await queue.add(resolvedDepth === "deep" ? "review:deep" : "review", jobData);
   await queue.close().catch(() => undefined);
 
   return review.id;
@@ -950,6 +1074,7 @@ app.post("/api/webhooks/github", async (c) => {
       state?: string | null;
       htmlUrl?: string | null;
     },
+    opts: { depth?: DepthTier; source?: "webhook" | "comment" } = {},
   ) => {
     if (!repoFullName || !prNumber) {
       return;
@@ -971,7 +1096,8 @@ app.post("/api/webhooks/github", async (c) => {
       profile,
       provider: "github",
       installationId,
-      source: "webhook",
+      source: opts.source ?? "webhook",
+      depth: opts.depth,
       prMeta,
     });
   };
@@ -1005,8 +1131,14 @@ app.post("/api/webhooks/github", async (c) => {
     if (bodyText.startsWith("/codecrawler")) {
       const issue = payload.issue as { number?: number; pull_request?: unknown } | undefined;
       const n = typeof issue?.number === "number" ? issue.number : undefined;
+      // `/codecrawler deep` opts the PR into the deep agent tier (Plus/Pro
+      // only, gated at enqueue). Plain `/codecrawler` runs the default tier.
+      const wantsDeep = /\bdeep\b/i.test(bodyText);
       if (typeof n === "number" && issue?.pull_request) {
-        await enqueueForRepo(n);
+        await enqueueForRepo(n, undefined, {
+          source: "comment",
+          depth: wantsDeep ? "deep" : undefined,
+        });
       }
     }
   }
@@ -1283,8 +1415,16 @@ app.get("/api/me", async (c) => {
     plan: m.plan ?? "free",
   }));
 
+  const [meRow] = await db
+    .select({ role: schema.user.role, status: schema.user.status })
+    .from(schema.user)
+    .where(eq(schema.user.id, user.id))
+    .limit(1);
+
   return c.json({
     user: { id: user.id, email: user.email, name: user.name },
+    role: meRow?.role ?? "user",
+    status: meRow?.status ?? "active",
     teams,
   });
 });
@@ -1394,7 +1534,19 @@ app.post(
   async (c) => {
     const user = c.get("user");
     const body = c.req.valid("json");
-    const slugBase = body.slug ?? `${slugify(body.name)}-${randomBytes(3).toString("hex")}`;
+
+    const membershipCount = await countUserMemberships(user.id);
+    const governingPlan = await getUserHighestOwnedPlan(user.id);
+    const teamsCap = getPlanLimits(governingPlan).teamsPerUser;
+    if (teamsCap !== null && membershipCount >= teamsCap) {
+      throw new ApiError(
+        409,
+        "teams_per_user_cap",
+        `Teams per user cap (${teamsCap}) reached for ${governingPlan}`,
+      );
+    }
+
+    const slugBase = `${slugify(body.name)}-${randomBytes(3).toString("hex")}`;
     const orgId = randomUUID();
 
     try {
@@ -1784,6 +1936,16 @@ app.post(
     const orgId = c.req.param("id");
     await requireOrgAccess(c, orgId, user.id);
     const body = c.req.valid("json");
+
+    const settings = await getAppSettings();
+    if (!settings.paymentsEnabled) {
+      throw new ApiError(
+        403,
+        "payments_disabled",
+        "Payments are currently disabled for this instance. Contact an administrator.",
+      );
+    }
+
     const redirectUrl = env.MOLLIE_REDIRECT_URL;
     const webhookUrl = env.MOLLIE_WEBHOOK_URL;
     if (!redirectUrl || !webhookUrl) {
@@ -1874,6 +2036,7 @@ app.get("/api/teams/:id/agent-profile", async (c) => {
       graphType: "pr_review",
       nodeModels: DEFAULT_NODE_MODELS,
       coverageStrategy: DEFAULT_COVERAGE_STRATEGY,
+      defaultDepth: resolveDepthFromMode(),
     });
   }
   return c.json(profile);
@@ -1902,17 +2065,20 @@ app.put(
         ...((existing.nodeModels as Record<string, string> | null) ?? {}),
         ...(body.nodeModels ?? {}),
       };
+      const nextDepth = body.defaultDepth ?? (existing.defaultDepth as DepthTier | null) ?? null;
       await db
         .update(schema.agentProfiles)
         .set({
           nodeModels: merged,
           coverageStrategy: body.coverageStrategy ?? existing.coverageStrategy,
+          defaultDepth: nextDepth,
         })
         .where(eq(schema.agentProfiles.id, existing.id));
       return c.json({
         ...existing,
         nodeModels: merged,
         coverageStrategy: body.coverageStrategy ?? existing.coverageStrategy,
+        defaultDepth: nextDepth,
       });
     }
     const nodeModels = body.nodeModels ?? DEFAULT_NODE_MODELS;
@@ -1923,6 +2089,7 @@ app.put(
         graphType: "pr_review",
         nodeModels,
         coverageStrategy: body.coverageStrategy ?? DEFAULT_COVERAGE_STRATEGY,
+        defaultDepth: body.defaultDepth ?? null,
       })
       .returning();
     return c.json(created, 201);
@@ -2233,23 +2400,29 @@ app.post("/api/projects/:id/pulls/:n/review", async (c) => {
 
   if (!syntheticPr) {
     const plan = await getTeamPlan(orgId);
-    if (plan === "free") {
-      const hasByok = await hasValidByokKey(orgId);
-      if (!hasByok) {
-        throw new ApiError(
-          402,
-          "free_byok_only",
-          "Free plan is BYOK-only — add an API key in team settings or upgrade.",
-        );
-      }
+    const hasByok = await hasValidByokKey(orgId);
+    if (plan === "free" && !hasByok) {
+      throw new ApiError(
+        402,
+        "free_byok_only",
+        "Free plan is BYOK-only — add your own API key in team settings or upgrade.",
+      );
     }
-    const projectedCost = computeReviewCost({
-      orchestratorWeight: 1,
-      reviewerWeight: 1,
-      summarizerWeight: 1,
-      sliceCount: 1,
+    // Deep reviews are Plus/Pro only. Gate explicitly here with a 403 so the
+    // dashboard gets a clear error (webhook/comment triggers downgrade silently
+    // inside resolveEnqueueDepth instead).
+    if (parsed.depth === "deep" && planRank(plan) < planRank("plus")) {
+      throw new ApiError(403, "plan_required", "Deep reviews require Plus or Pro");
+    }
+    // Preflight the daily quota against the run's depth tier. For agentic runs
+    // we reserve the tier's spend ceiling (the agent loop hard-caps spend at
+    // that budget); the static path reserves the weight-unit floor. A team with
+    // a valid BYOK key runs on its own spend, so bypass the hosted quota.
+    const projectedDepth = pickDepthTier(parsed.depth ?? null, null);
+    const projectedCost = projectReviewCost(projectedDepth);
+    const quota = await checkQuota(orgId, "pr_review", projectedCost, {
+      billingMode: hasByok ? "byok" : "hosted",
     });
-    const quota = await checkQuota(orgId, "pr_review", projectedCost);
     if (!quota.allowed) {
       throw new ApiError(
         402,
@@ -2269,6 +2442,7 @@ app.post("/api/projects/:id/pulls/:n/review", async (c) => {
     profile,
     syntheticPr,
     repoPath: parsed.repoPath,
+    depth: syntheticPr ? "static" : (parsed.depth ?? null),
     triggerUserId: user.id,
     triggerEmail: user.email,
     source: syntheticPr ? "synthetic" : "manual",
@@ -2844,6 +3018,506 @@ app.post(
     return c.json(row ?? null);
   },
 );
+
+app.get("/api/signup-config", async (c) => {
+  const settings = await getAppSettings();
+  return c.json({
+    signupMode: settings.signupMode,
+    allowedDomains: settings.allowedDomains ?? [],
+    paymentsEnabled: settings.paymentsEnabled,
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Admin section — /api/admin/*
+// ---------------------------------------------------------------------------
+
+app.use("/api/admin/*", requireAdminMiddleware);
+
+app.get("/api/admin/settings", async (c) => {
+  const settings = await getAppSettings();
+  return c.json({
+    signupMode: settings.signupMode,
+    allowedDomains: settings.allowedDomains ?? [],
+    paymentsEnabled: settings.paymentsEnabled,
+    updatedAt: settings.updatedAt,
+  });
+});
+
+const updateSettingsSchema = z.object({
+  signupMode: z.enum(["open", "closed", "domain_restricted", "approval"]).optional(),
+  allowedDomains: z.array(z.string().min(1)).optional(),
+  paymentsEnabled: z.boolean().optional(),
+});
+
+app.patch(
+  "/api/admin/settings",
+  zValidator("json", updateSettingsSchema, (result, c) => {
+    if (!result.success) {
+      return jsonError(
+        c,
+        400,
+        "validation_error",
+        result.error.issues.map((i) => i.message).join("; "),
+      );
+    }
+  }),
+  async (c) => {
+    const user = c.get("user");
+    const body = c.req.valid("json");
+    const set: Record<string, unknown> = { updatedAt: sql`now()` };
+    if (body.signupMode) {
+      set.signupMode = body.signupMode;
+    }
+    if (body.allowedDomains) {
+      set.allowedDomains = body.allowedDomains
+        .flatMap((d) => d.split(/[\s,]+/))
+        .map((d) => d.trim().toLowerCase().replace(/^@/, ""))
+        .filter((d) => d.length > 0);
+    }
+    if (typeof body.paymentsEnabled === "boolean") {
+      set.paymentsEnabled = body.paymentsEnabled;
+    }
+    const [updated] = await db
+      .update(schema.appSettings)
+      .set(set)
+      .where(eq(schema.appSettings.id, "singleton"))
+      .returning();
+    await audit(null, user.id, "admin.settings_updated", {
+      signupMode: updated?.signupMode,
+      paymentsEnabled: updated?.paymentsEnabled,
+    }).catch(() => undefined);
+    return c.json({
+      signupMode: updated?.signupMode ?? "open",
+      allowedDomains: updated?.allowedDomains ?? [],
+      paymentsEnabled: updated?.paymentsEnabled ?? true,
+      updatedAt: updated?.updatedAt ?? new Date(),
+    });
+  },
+);
+
+app.get("/api/admin/stats", async (c) => {
+  const [userCounts] = await db
+    .select({
+      total: count(schema.user.id),
+    })
+    .from(schema.user);
+  const [adminCounts] = await db
+    .select({ total: count(schema.user.id) })
+    .from(schema.user)
+    .where(eq(schema.user.role, "admin"));
+  const statusRows = await db
+    .select({ status: schema.user.status, total: count() })
+    .from(schema.user)
+    .groupBy(schema.user.status);
+  const statusBreakdown: Record<string, number> = {};
+  for (const r of statusRows) {
+    statusBreakdown[r.status ?? "active"] = Number(r.total);
+  }
+
+  const [teamCount] = await db.select({ total: count() }).from(schema.organization);
+
+  const [reviewAgg] = await db
+    .select({
+      total: count(schema.reviews.id),
+      spendUsd: sum(schema.reviews.tokenSpendUsd),
+      credits: sum(schema.reviews.creditsCost),
+    })
+    .from(schema.reviews);
+  const reviewStatusRows = await db
+    .select({ status: schema.reviews.status, total: count() })
+    .from(schema.reviews)
+    .groupBy(schema.reviews.status);
+  const reviewByStatus: Record<string, number> = {};
+  for (const r of reviewStatusRows) {
+    reviewByStatus[r.status ?? "unknown"] = Number(r.total);
+  }
+
+  const [pendingSignups] = await db
+    .select({ total: count() })
+    .from(schema.signupRequests)
+    .where(eq(schema.signupRequests.status, "pending"));
+
+  const [usageAgg] = await db.select({ credits: sum(schema.usage.credits) }).from(schema.usage);
+
+  const settings = await getAppSettings();
+
+  return c.json({
+    users: {
+      total: Number(userCounts?.total ?? 0),
+      admins: Number(adminCounts?.total ?? 0),
+      active: statusBreakdown.active ?? 0,
+      pending: statusBreakdown.pending ?? 0,
+      denied: statusBreakdown.denied ?? 0,
+    },
+    teams: { total: Number(teamCount?.total ?? 0) },
+    reviews: {
+      total: Number(reviewAgg?.total ?? 0),
+      byStatus: reviewByStatus,
+    },
+    tokens: {
+      spendUsd: Number(reviewAgg?.spendUsd ?? 0),
+      credits: Number(reviewAgg?.credits ?? 0),
+      usageCredits: Number(usageAgg?.credits ?? 0),
+    },
+    signups: {
+      pending: Number(pendingSignups?.total ?? 0),
+    },
+    signupMode: settings.signupMode,
+    paymentsEnabled: settings.paymentsEnabled,
+  });
+});
+
+app.get("/api/admin/users", async (c) => {
+  const status = c.req.query("status");
+  const role = c.req.query("role");
+  const q = c.req.query("q")?.trim().toLowerCase();
+  const conditions = [];
+  if (status === "active" || status === "pending" || status === "denied") {
+    conditions.push(eq(schema.user.status, status));
+  }
+  if (role === "admin" || role === "user") {
+    conditions.push(eq(schema.user.role, role));
+  }
+  const rows = await db
+    .select({
+      id: schema.user.id,
+      name: schema.user.name,
+      email: schema.user.email,
+      role: schema.user.role,
+      status: schema.user.status,
+      emailVerified: schema.user.emailVerified,
+      createdAt: schema.user.createdAt,
+    })
+    .from(schema.user)
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .orderBy(desc(schema.user.createdAt));
+  const filtered = q
+    ? rows.filter((r) => r.email.toLowerCase().includes(q) || r.name.toLowerCase().includes(q))
+    : rows;
+  return c.json({ items: filtered });
+});
+
+const updateUserRoleSchema = z.object({ role: z.enum(["admin", "user"]) });
+
+app.patch(
+  "/api/admin/users/:id/role",
+  zValidator("json", updateUserRoleSchema, (result, c) => {
+    if (!result.success) {
+      return jsonError(
+        c,
+        400,
+        "validation_error",
+        result.error.issues.map((i) => i.message).join("; "),
+      );
+    }
+  }),
+  async (c) => {
+    const actor = c.get("user");
+    const targetId = c.req.param("id");
+    const body = c.req.valid("json");
+
+    const [target] = await db
+      .select({
+        id: schema.user.id,
+        role: schema.user.role,
+        status: schema.user.status,
+        email: schema.user.email,
+        name: schema.user.name,
+      })
+      .from(schema.user)
+      .where(eq(schema.user.id, targetId))
+      .limit(1);
+    if (!target) {
+      throw new ApiError(404, "not_found", "User not found");
+    }
+
+    if (target.role !== body.role) {
+      if (target.role === "admin" && body.role === "user") {
+        const adminRows = await db
+          .select({ id: schema.user.id })
+          .from(schema.user)
+          .where(eq(schema.user.role, "admin"));
+        if (adminRows.length <= 1) {
+          throw new ApiError(
+            409,
+            "last_admin",
+            "Cannot demote the last administrator. Promote another user first.",
+          );
+        }
+      }
+      await db.update(schema.user).set({ role: body.role }).where(eq(schema.user.id, targetId));
+      if (target.email) {
+        if (body.role === "admin") {
+          await enqueueEmail("admin-role-granted", target.email, {
+            name: target.name ?? "",
+            actorName: actor.name,
+          }).catch(() => undefined);
+        } else {
+          await enqueueEmail("admin-role-revoked", target.email, {
+            name: target.name ?? "",
+            actorName: actor.name,
+          }).catch(() => undefined);
+        }
+      }
+      await audit(null, actor.id, "admin.role_changed", {
+        targetUserId: targetId,
+        role: body.role,
+      }).catch(() => undefined);
+    }
+    return c.json({ ok: true });
+  },
+);
+
+const updateUserStatusSchema = z.object({
+  status: z.enum(["active", "denied"]),
+  reason: z.string().optional(),
+});
+
+app.patch(
+  "/api/admin/users/:id/status",
+  zValidator("json", updateUserStatusSchema, (result, c) => {
+    if (!result.success) {
+      return jsonError(
+        c,
+        400,
+        "validation_error",
+        result.error.issues.map((i) => i.message).join("; "),
+      );
+    }
+  }),
+  async (c) => {
+    const actor = c.get("user");
+    const targetId = c.req.param("id");
+    const body = c.req.valid("json");
+
+    const [target] = await db
+      .select({
+        id: schema.user.id,
+        role: schema.user.role,
+        status: schema.user.status,
+        email: schema.user.email,
+        name: schema.user.name,
+      })
+      .from(schema.user)
+      .where(eq(schema.user.id, targetId))
+      .limit(1);
+    if (!target) {
+      throw new ApiError(404, "not_found", "User not found");
+    }
+
+    if (target.status === body.status) {
+      return c.json({ ok: true });
+    }
+
+    if (body.status === "denied" && target.role === "admin") {
+      const adminRows = await db
+        .select({ id: schema.user.id })
+        .from(schema.user)
+        .where(eq(schema.user.role, "admin"));
+      if (adminRows.length <= 1) {
+        throw new ApiError(
+          409,
+          "last_admin",
+          "Cannot disable the last administrator. Promote another admin first.",
+        );
+      }
+    }
+
+    await db.update(schema.user).set({ status: body.status }).where(eq(schema.user.id, targetId));
+
+    if (target.email) {
+      if (body.status === "denied") {
+        await enqueueEmail("account-disabled", target.email, {
+          name: target.name ?? "",
+          reason: body.reason ?? "",
+        }).catch(() => undefined);
+      }
+    }
+    await audit(null, actor.id, "admin.user_status_changed", {
+      targetUserId: targetId,
+      status: body.status,
+      reason: body.reason,
+    }).catch(() => undefined);
+    return c.json({ ok: true });
+  },
+);
+
+app.get("/api/admin/signup-requests", async (c) => {
+  const statusParam = c.req.query("status");
+  const status = statusParam === "approved" || statusParam === "denied" ? statusParam : "pending";
+  const rows = await db
+    .select({
+      id: schema.signupRequests.id,
+      userId: schema.signupRequests.userId,
+      email: schema.signupRequests.email,
+      name: schema.signupRequests.name,
+      status: schema.signupRequests.status,
+      denialReason: schema.signupRequests.denialReason,
+      decidedBy: schema.signupRequests.decidedBy,
+      decidedAt: schema.signupRequests.decidedAt,
+      createdAt: schema.signupRequests.createdAt,
+    })
+    .from(schema.signupRequests)
+    .where(eq(schema.signupRequests.status, status))
+    .orderBy(desc(schema.signupRequests.createdAt));
+  return c.json({ items: rows });
+});
+
+app.post("/api/admin/signup-requests/:id/approve", async (c) => {
+  const actor = c.get("user");
+  const requestId = c.req.param("id");
+  const [reqRow] = await db
+    .select()
+    .from(schema.signupRequests)
+    .where(eq(schema.signupRequests.id, requestId))
+    .limit(1);
+  if (!reqRow) {
+    throw new ApiError(404, "not_found", "Sign-up request not found");
+  }
+  if (reqRow.status !== "pending") {
+    throw new ApiError(409, "not_pending", "Request is no longer pending");
+  }
+
+  await db.transaction(async (tx) => {
+    await tx
+      .update(schema.signupRequests)
+      .set({ status: "approved", decidedBy: actor.id, decidedAt: new Date() })
+      .where(eq(schema.signupRequests.id, requestId));
+    await tx.update(schema.user).set({ status: "active" }).where(eq(schema.user.id, reqRow.userId));
+  });
+
+  if (reqRow.email) {
+    await enqueueEmail("signup-approved", reqRow.email, {
+      name: reqRow.name ?? "",
+    }).catch(() => undefined);
+  }
+  await audit(null, actor.id, "admin.signup_approved", {
+    targetUserId: reqRow.userId,
+    email: reqRow.email,
+  }).catch(() => undefined);
+  return c.json({ ok: true });
+});
+
+const denySignupSchema = z.object({ reason: z.string().optional() });
+
+app.post(
+  "/api/admin/signup-requests/:id/deny",
+  zValidator("json", denySignupSchema, (result, c) => {
+    if (!result.success) {
+      return jsonError(
+        c,
+        400,
+        "validation_error",
+        result.error.issues.map((i) => i.message).join("; "),
+      );
+    }
+  }),
+  async (c) => {
+    const actor = c.get("user");
+    const requestId = c.req.param("id");
+    const body = c.req.valid("json");
+    const [reqRow] = await db
+      .select()
+      .from(schema.signupRequests)
+      .where(eq(schema.signupRequests.id, requestId))
+      .limit(1);
+    if (!reqRow) {
+      throw new ApiError(404, "not_found", "Sign-up request not found");
+    }
+    if (reqRow.status !== "pending") {
+      throw new ApiError(409, "not_pending", "Request is no longer pending");
+    }
+
+    const supportEmail = (await getAdminEmails())[0] ?? "";
+    await db.transaction(async (tx) => {
+      await tx
+        .update(schema.signupRequests)
+        .set({
+          status: "denied",
+          decidedBy: actor.id,
+          decidedAt: new Date(),
+          denialReason: body.reason ?? null,
+        })
+        .where(eq(schema.signupRequests.id, requestId));
+      await tx
+        .update(schema.user)
+        .set({ status: "denied" })
+        .where(eq(schema.user.id, reqRow.userId));
+    });
+
+    if (reqRow.email) {
+      await enqueueEmail("signup-denied", reqRow.email, {
+        name: reqRow.name ?? "",
+        reason: body.reason ?? "",
+        supportEmail,
+      }).catch(() => undefined);
+    }
+    await audit(null, actor.id, "admin.signup_denied", {
+      targetUserId: reqRow.userId,
+      email: reqRow.email,
+      reason: body.reason,
+    }).catch(() => undefined);
+    return c.json({ ok: true });
+  },
+);
+
+app.get("/api/admin/teams", async (c) => {
+  const teams = await db
+    .select({
+      id: schema.organization.id,
+      name: schema.organization.name,
+      slug: schema.organization.slug,
+      createdAt: schema.organization.createdAt,
+      plan: schema.teamSubscriptions.plan,
+      status: schema.teamSubscriptions.status,
+    })
+    .from(schema.organization)
+    .leftJoin(schema.teamSubscriptions, eq(schema.organization.id, schema.teamSubscriptions.orgId))
+    .orderBy(desc(schema.organization.createdAt));
+
+  const memberCounts = await db
+    .select({ orgId: schema.member.organizationId, total: count() })
+    .from(schema.member)
+    .groupBy(schema.member.organizationId);
+  const memberMap = new Map(memberCounts.map((r) => [r.orgId, Number(r.total)]));
+
+  const reviewAgg = await db
+    .select({
+      orgId: schema.projects.orgId,
+      total: count(schema.reviews.id),
+      spendUsd: sum(schema.reviews.tokenSpendUsd),
+      credits: sum(schema.reviews.creditsCost),
+    })
+    .from(schema.reviews)
+    .innerJoin(schema.projects, eq(schema.reviews.projectId, schema.projects.id))
+    .groupBy(schema.projects.orgId);
+  const reviewMap = new Map(
+    reviewAgg.map((r) => [
+      r.orgId,
+      {
+        reviews: Number(r.total),
+        spendUsd: Number(r.spendUsd ?? 0),
+        credits: Number(r.credits ?? 0),
+      },
+    ]),
+  );
+
+  return c.json({
+    items: teams.map((t) => ({
+      id: t.id,
+      name: t.name,
+      slug: t.slug,
+      createdAt: t.createdAt,
+      plan: t.plan ?? "free",
+      status: t.status ?? "active",
+      members: memberMap.get(t.id) ?? 0,
+      reviews: reviewMap.get(t.id)?.reviews ?? 0,
+      tokenSpendUsd: reviewMap.get(t.id)?.spendUsd ?? 0,
+      credits: reviewMap.get(t.id)?.credits ?? 0,
+    })),
+  });
+});
 
 app.notFound((c) => jsonError(c, 404, "not_found", "Not found"));
 

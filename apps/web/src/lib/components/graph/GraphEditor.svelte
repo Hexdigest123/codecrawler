@@ -4,6 +4,7 @@
   import "@xyflow/svelte/dist/style.css";
 
   import { ApiError, api } from "$lib/api";
+  import { toastError } from "$lib/toast.svelte";
   import { type ModelOption, type PlanId, planRank } from "$lib/types";
 
   import AgentNode from "./AgentNode.svelte";
@@ -36,7 +37,6 @@
 
   let selectedKey = $state<string | null>(null);
   let saving = $state(false);
-  let saveError = $state<string | null>(null);
   let query = $state("");
 
   let searchInput = $state<HTMLInputElement | null>(null);
@@ -109,13 +109,11 @@
     if (data && data.modelBearing) {
       selectedKey = data.key;
       query = "";
-      saveError = null;
     }
   }
 
   function closePicker() {
     selectedKey = null;
-    saveError = null;
   }
 
   function onBackdropClick(event: MouseEvent) {
@@ -133,7 +131,6 @@
   async function chooseModel(modelId: string) {
     if (!selectedKey || saving) return;
     saving = true;
-    saveError = null;
     try {
       const updated = await api<GraphDescriptor>(
         `/api/teams/${teamId}/agent-graph/${graphType}/nodes/${encodeURIComponent(selectedKey)}`,
@@ -142,7 +139,7 @@
       applyDescriptor(updated);
       selectedKey = null;
     } catch (err) {
-      saveError = err instanceof ApiError ? err.message : "Could not update the node model.";
+      toastError(err instanceof ApiError ? err.message : "Could not update the node model.");
     } finally {
       saving = false;
     }
@@ -297,7 +294,7 @@
                         <span class="font-medium">{model.name}</span>
                         <span class="text-xs text-neutral-500"
                           >{model.vendor ?? model.provider ?? "model"}{model.weight !==
-                          undefined && model.weight !== ""
+                          undefined && model.weight !== "" && !model.byok
                             ? ` · ×${model.weight}`
                             : ""}</span
                         >
@@ -335,11 +332,6 @@
         {/if}
       </div>
 
-      {#if saveError}
-        <p role="alert" class="border-t border-neutral-200 p-3 text-sm text-red-600 dark:border-neutral-800 dark:text-red-400">
-          {saveError}
-        </p>
-      {/if}
       {#if saving}
         <p class="flex items-center gap-2 border-t border-neutral-200 p-3 text-xs text-neutral-500 dark:border-neutral-800">
           <span

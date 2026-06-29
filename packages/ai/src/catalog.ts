@@ -57,17 +57,25 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 let cache: CatalogCache | null = null;
 
 export async function fetchModelCatalog(orgId?: string): Promise<CatalogModel[]> {
-  const now = Date.now();
-  let base: CatalogModel[];
-  if (cache && cache.expiresAt > now) {
-    base = cache.models;
-  } else {
-    const live = await tryFetchLiveCatalog();
-    base = live.length > 0 ? live : await fetchCatalogFromDb();
-    cache = { expiresAt: now + CACHE_TTL_MS, models: base };
-  }
+  const base = await getBaseCatalog();
   const saia = await fetchSaiaCatalog(orgId);
   return applyByokFlag([...base, ...saia], orgId);
+}
+
+export async function findCatalogModelById(modelId: string): Promise<CatalogModel | null> {
+  const base = await getBaseCatalog();
+  return base.find((m) => m.id === modelId) ?? null;
+}
+
+async function getBaseCatalog(): Promise<CatalogModel[]> {
+  const now = Date.now();
+  if (cache && cache.expiresAt > now) {
+    return cache.models;
+  }
+  const live = await tryFetchLiveCatalog();
+  const base = live.length > 0 ? live : await fetchCatalogFromDb();
+  cache = { expiresAt: now + CACHE_TTL_MS, models: base };
+  return base;
 }
 
 async function tryFetchLiveCatalog(): Promise<CatalogModel[]> {
