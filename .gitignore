@@ -68,3 +68,5 @@ desktop.ini
 .env.local
 .env.*.local
 TODO.md
+
+.playwright-mcp
