@@ -1,0 +1,21 @@
+{
+  "name": "@codecrawler/queue",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dev": "bun --watch src/index.ts"
+  },
+  "dependencies": {
+    "@codecrawler/shared": "workspace:*",
+    "bullmq": "^5.79.0",
+    "ioredis": "^5.11.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0"
+  }
+}
