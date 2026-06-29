@@ -1,0 +1,22 @@
+{
+  "name": "@codecrawler/billing",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dev": "bun --watch src/index.ts"
+  },
+  "dependencies": {
+    "@codecrawler/db": "workspace:*",
+    "@codecrawler/shared": "workspace:*",
+    "@mollie/api-client": "^3.7.0",
+    "drizzle-orm": "^0.38.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0"
+  }
+}

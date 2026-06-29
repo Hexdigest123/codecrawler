@@ -1,0 +1,32 @@
+{
+  "name": "codecrawler",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "bun run --filter '*' dev",
+    "build": "bun run --filter '*' build",
+    "typecheck": "bun run --filter '*' typecheck",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "db:up": "podman compose up -d",
+    "db:down": "podman compose down",
+    "db:generate": "bun --filter @codecrawler/db db:generate",
+    "db:migrate": "bun --filter @codecrawler/db db:migrate",
+    "db:seed": "bun --filter @codecrawler/db db:seed"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.2.4",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "bun",
+      "version": ">=1.1"
+    }
+  }
+}

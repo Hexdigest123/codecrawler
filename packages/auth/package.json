@@ -1,0 +1,25 @@
+{
+  "name": "@codecrawler/auth",
+  "type": "module",
+  "version": "0.0.0",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./src/client.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dev": "bun --watch src/index.ts"
+  },
+  "dependencies": {
+    "@codecrawler/db": "workspace:*",
+    "@codecrawler/shared": "workspace:*",
+    "better-auth": "^1.2.0"
+  },
+  "peerDependencies": {
+    "drizzle-orm": "^0.38.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

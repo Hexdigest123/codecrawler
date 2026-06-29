@@ -1,0 +1,70 @@
+# ---------- Secrets / env ----------
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# ---------- Node ----------
+node_modules/
+.pnp
+.pnp.js
+pnpm-debug.log*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-lock.yaml.bak
+
+# ---------- Build outputs ----------
+dist/
+build/
+out/
+.next/
+.nuxt/
+.svelte-kit/
+.vercel/
+.netlify/
+*.tsbuildinfo
+.vite/
+
+# ---------- Coverage / test artifacts ----------
+coverage/
+.nyc_output/
+*.lcov
+.cache/
+
+# ---------- Logs ----------
+logs/
+*.log
+
+# ---------- TypeScript / tooling ----------
+.eslintcache
+.stylelintcache
+.parcel-cache/
+.turbo/
+
+# ---------- Databases / local data ----------
+*.sqlite
+*.sqlite3
+*.db
+data/
+postgres-data/
+redis-data/
+
+# ---------- OS ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- Editors ----------
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.swp
+*.swo
+*~
+
+# ---------- Misc ----------
+.env.local
+.env.*.local
+TODO.md

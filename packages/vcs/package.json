@@ -1,0 +1,23 @@
+{
+  "name": "@codecrawler/vcs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dev": "bun --watch src/index.ts"
+  },
+  "dependencies": {
+    "@gitbeaker/rest": "^43.8.0",
+    "@octokit/auth-app": "^8.0.0",
+    "@octokit/rest": "^22.0.0",
+    "@octokit/webhooks": "^14.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.9.0"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "@codecrawler/db",
+  "type": "module",
+  "version": "0.0.0",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./src/schema/index.ts"
+  },
+  "scripts": {
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:seed": "bun run src/seed.ts",
+    "typecheck": "tsc --noEmit",
+    "dev": "bun --watch src/index.ts"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.38.0"
+  },
+  "devDependencies": {
+    "@codecrawler/shared": "workspace:*",
+    "@types/node": "^22.0.0",
+    "drizzle-kit": "^0.30.0",
+    "postgres": "^3.4.0",
+    "typescript": "^5.6.0"
+  }
+}

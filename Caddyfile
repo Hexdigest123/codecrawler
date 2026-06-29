@@ -1,0 +1,60 @@
+# =============================================================================
+# CodeCrawler edge proxy — Caddy v2 (auto-HTTPS via Let's Encrypt).
+# Swap the site name below (and PUBLIC_WEB_URL / BETTER_AUTH_URL / origins in
+# .env) to redeploy under a different domain. DNS A/AAAA must point at this VPS
+# and ports 80/443 must be reachable before Caddy can issue a certificate.
+# =============================================================================
+
+{
+	# ACME account email for Let's Encrypt / ZeroSSL issuance + expiry notices.
+	email ops@merckel.dev
+}
+
+codecrawler.merckel.dev {
+	encode gzip zstd
+
+	log {
+		output stdout
+		format console
+	}
+
+	# Security headers (M7 hardening).
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+
+	# API surface: REST, Better Auth (/api/auth/*), and the inbound webhooks
+	# (/api/webhooks/{github,gitlab,gitea}, /api/payments/webhook).
+	@api path /api/*
+	handle @api {
+		reverse_proxy api:3001
+	}
+
+	# Everything else -> SvelteKit dashboard (SSR + static assets). Relative
+	# /api calls from the browser resolve on the same origin via the route above.
+	handle {
+		reverse_proxy web:3000
+	}
+}
+
+# -----------------------------------------------------------------------------
+# OPTIONAL dedicated API/webhook subdomain. Uncomment if you prefer to keep
+# programmatic + webhook traffic on api.codecrawler.merckel.dev (point its DNS
+# record at this VPS first). The /api/* path on the apex site above stays in
+# place either way so browser-relative calls keep working.
+# -----------------------------------------------------------------------------
+# api.codecrawler.merckel.dev {
+# 	encode gzip zstd
+# 	log {
+# 		output stdout
+# 		format console
+# 	}
+# 	header {
+# 		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+# 		X-Content-Type-Options "nosniff"
+# 		Referrer-Policy "strict-origin-when-cross-origin"
+# 	}
+# 	reverse_proxy api:3001
+# }

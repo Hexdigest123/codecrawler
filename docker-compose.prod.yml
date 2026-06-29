@@ -1,0 +1,132 @@
+# =============================================================================
+# CodeCrawler — production stack (milestone M7 / §14 of PLAN.md)
+# =============================================================================
+# Requires a populated .env on the host (cp .env.prod.example .env && fill
+# secrets). The prod .env MUST use the compose SERVICE NAMES for DB/Redis,
+# NOT localhost — containers reach each other by service name:
+#   DATABASE_URL=postgresql://codecrawler:postgres@db:5432/codecrawler
+#   REDIS_URL=redis://redis:6379
+# All remaining prod values (origins, BETTER_AUTH_SECRET, TOKEN_ENCRYPTION_KEY,
+# OPENROUTER_API_KEY, live Mollie key, SMTP, GitHub App creds, SNYK_TOKEN, ...)
+# live in that .env and are injected into api/worker/web via env_file.
+#
+# App images are built from the REPOSITORY ROOT (Bun-workspace context) so each
+# Dockerfile can COPY the workspace packages + root lockfile. Each app's
+# Dockerfile therefore lives at apps/<app>/Dockerfile and expects context = repo
+# root (see the `build:` blocks below).
+#
+# Validate:  podman compose -f docker-compose.prod.yml config
+# Bring up:  podman compose -f docker-compose.prod.yml up -d --build
+# =============================================================================
+
+name: codecrawler
+
+services:
+  db:
+    image: postgres:18-alpine
+    container_name: codecrawler-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-codecrawler}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-codecrawler}
+    # Loopback-only: lets an admin inspect the DB from the VPS without exposing
+    # Postgres to the public internet. Drop this mapping to make it internal-only.
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      # PG18 keeps its cluster at /var/lib/postgresql/data — mount the parent.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-codecrawler} -d ${POSTGRES_DB:-codecrawler}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: codecrawler-redis
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    # No host port — internal only (api + worker connect as redis:6379).
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    image: codecrawler-api:latest
+    container_name: codecrawler-api
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      # PORT comes from .env (3001); Caddy proxies /api/* -> api:3001.
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    # No host port — Caddy terminates TLS and proxies to api:3001 internally.
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    image: codecrawler-worker:latest
+    container_name: codecrawler-worker
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      # SNYK_TOKEN and SNYK_ORG_ID are injected from .env (env_file above); the
+      # worker image bundles the Snyk CLI and consumes them at runtime.
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    image: codecrawler-web:latest
+    container_name: codecrawler-web
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000                  # overrides .env's PORT=3001 (that one is for api)
+      ORIGIN: ${PUBLIC_WEB_URL}   # SvelteKit origin (adapter-node)
+    depends_on:
+      - api
+    restart: unless-stopped
+    # No host port — Caddy proxies everything else -> web:3000 internally.
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: codecrawler-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data        # TLS certs + ACME account state
+      - caddy_config:/config
+    depends_on:
+      - web
+      - api
+    restart: unless-stopped
+
+volumes:
+  postgres-data: {}
+  redis-data: {}
+  caddy_data: {}
+  caddy_config: {}
