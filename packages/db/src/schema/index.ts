@@ -1,3 +1,4 @@
+export * from "./admin";
 export * from "./agent_profiles";
 export * from "./api_keys";
 export * from "./audit_log";
@@ -10,6 +11,7 @@ export * from "./reviews";
 export * from "./usage";
 export * from "./vcs";
 
+import type { appSettings, signupRequests } from "./admin";
 import type { agentProfiles } from "./agent_profiles";
 import type { apiKeys } from "./api_keys";
 import type { auditLog } from "./audit_log";
@@ -68,3 +70,7 @@ export type ModelWeight = typeof modelWeights.$inferSelect;
 export type NewModelWeight = typeof modelWeights.$inferInsert;
 export type AuditLog = typeof auditLog.$inferSelect;
 export type NewAuditLog = typeof auditLog.$inferInsert;
+export type AppSettings = typeof appSettings.$inferSelect;
+export type NewAppSettings = typeof appSettings.$inferInsert;
+export type SignupRequest = typeof signupRequests.$inferSelect;
+export type NewSignupRequest = typeof signupRequests.$inferInsert;

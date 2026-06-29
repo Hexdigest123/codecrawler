@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invalidateAll } from "$app/navigation";
   import { ApiError, api } from "$lib/api";
+  import { toastError, toastSuccess } from "$lib/toast.svelte";
   import { PLAN_LABEL, type BillingDetail, type PlanId } from "$lib/types";
   import type { PageProps } from "./$types";
 
@@ -9,10 +10,9 @@
   const billing = $derived<BillingDetail>(data.billing);
   const isFree = $derived(billing.plan === "free");
   const canSync = $derived(!isFree || billing.hasMollieCustomer === true);
+  const paymentsEnabled = $derived(data.paymentsEnabled !== false);
 
   let busyPlan = $state<PlanId | "sync" | null>(null);
-  let actionError = $state<string | null>(null);
-  let actionInfo = $state<string | null>(null);
 
   function formatDate(iso?: string): string {
     if (!iso) return "—";
@@ -46,10 +46,8 @@
   }
 
   async function upgrade(plan: PlanId) {
-    if (plan === "free" || busyPlan) return;
+    if (plan === "free" || busyPlan || !paymentsEnabled) return;
     busyPlan = plan;
-    actionError = null;
-    actionInfo = null;
     try {
       const { checkoutUrl } = await api<{ checkoutUrl: string }>(
         `/api/teams/${data.teamId}/billing/checkout`,
@@ -58,13 +56,14 @@
       if (checkoutUrl) {
         window.location.assign(checkoutUrl);
       } else {
-        actionError = "Checkout could not be started. Please try again.";
+        toastError("Checkout could not be started. Please try again.");
       }
     } catch (err) {
-      actionError =
+      toastError(
         err instanceof ApiError
           ? err.message
-          : "Checkout is unavailable right now. Mollie may not be configured.";
+          : "Checkout is unavailable right now. Mollie may not be configured.",
+      );
     } finally {
       busyPlan = null;
     }
@@ -79,20 +78,18 @@
     )
       return;
     busyPlan = "free";
-    actionError = null;
-    actionInfo = null;
     try {
       await api<{ ok: boolean }>(`/api/teams/${data.teamId}/billing/cancel`, {
         method: "POST",
       });
-      actionInfo =
-        "Subscription cancelled. Your plan changes to Free at the next period.";
+      toastSuccess(
+        "Subscription cancelled. Your plan changes to Free at the next period.",
+      );
       await invalidateAll();
     } catch (err) {
-      actionError =
-        err instanceof ApiError
-          ? err.message
-          : "Could not cancel the subscription.";
+      toastError(
+        err instanceof ApiError ? err.message : "Could not cancel the subscription.",
+      );
     } finally {
       busyPlan = null;
     }
@@ -101,19 +98,18 @@
   async function syncNow() {
     if (busyPlan) return;
     busyPlan = "sync";
-    actionError = null;
-    actionInfo = null;
     try {
       await api<{ ok: boolean }>(`/api/teams/${data.teamId}/billing/sync`, {
         method: "POST",
       });
-      actionInfo = "Reconciled with Mollie.";
+      toastSuccess("Reconciled with Mollie.");
       await invalidateAll();
     } catch (err) {
-      actionError =
+      toastError(
         err instanceof ApiError
           ? err.message
-          : "Could not sync with Mollie right now. It may not be configured.";
+          : "Could not sync with Mollie right now. It may not be configured.",
+      );
     } finally {
       busyPlan = null;
     }
@@ -188,14 +184,12 @@
     {/if}
   </section>
 
-  {#if actionError}
-    <p role="alert" class="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
-      {actionError}
-    </p>
-  {/if}
-  {#if actionInfo}
-    <p role="status" class="rounded-lg border border-green-300 bg-green-50 px-3 py-2 text-sm text-green-700 dark:border-green-900 dark:bg-green-950 dark:text-green-300">
-      {actionInfo}
+  {#if !paymentsEnabled}
+    <p
+      role="status"
+      class="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200"
+    >
+      Payments are currently disabled for this instance. Contact an administrator.
     </p>
   {/if}
 
@@ -261,8 +255,9 @@
             <button
               type="button"
               onclick={() => upgrade(plan.id)}
-              disabled={busyPlan !== null}
-              class="w-full rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50"
+              disabled={busyPlan !== null || !paymentsEnabled}
+              title={paymentsEnabled ? undefined : "Payments are currently disabled"}
+              class="w-full rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {busyPlan === plan.id ? "Redirecting…" : `Upgrade to ${plan.label}`}
             </button>

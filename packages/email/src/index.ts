@@ -36,7 +36,14 @@ export type EmailEvent =
   | "app-installed"
   | "app-uninstalled"
   | "connection-broken"
-  | "token-expired";
+  | "token-expired"
+  | "signup-received"
+  | "signup-approved"
+  | "signup-denied"
+  | "signup-pending-admin"
+  | "admin-role-granted"
+  | "admin-role-revoked"
+  | "account-disabled";
 
 export interface RenderedEmail {
   subject: string;
@@ -732,6 +739,147 @@ function renderTokenExpired(payload: Record<string, unknown>): RenderedEmail {
   return { subject, html: shell("Token expired", body) };
 }
 
+function renderSignupReceived(payload: Record<string, unknown>): RenderedEmail {
+  const name = str(payload, "name");
+  const signInUrl = str(payload, "signInUrl") || str(payload, "url") || webUrl("sign-in");
+  const subject = "We received your sign-up request";
+  const body = [
+    paragraph(
+      name
+        ? `Hi ${name}, thanks for requesting access to CodeCrawler.`
+        : "Thanks for requesting access to CodeCrawler.",
+    ),
+    paragraph(
+      "Your request is now in the approval queue. An administrator will review it shortly — you'll receive an email as soon as it's approved or denied.",
+    ),
+    paragraph(
+      "Until your account is approved, you won't be able to sign in. You can bookmark this page to try again once you receive your approval email.",
+    ),
+    cta(signInUrl, "Go to the sign-in page"),
+  ]
+    .filter((part) => part.length > 0)
+    .join("\n");
+  return { subject, html: shell("Sign-up request received", body) };
+}
+
+function renderSignupApproved(payload: Record<string, unknown>): RenderedEmail {
+  const name = str(payload, "name");
+  const signInUrl = str(payload, "signInUrl") || str(payload, "url") || webUrl("sign-in");
+  const subject = "Your CodeCrawler account was approved";
+  const body = [
+    paragraph(
+      name
+        ? `Hi ${name}, good news — your CodeCrawler account has been approved.`
+        : "Your CodeCrawler account has been approved.",
+    ),
+    paragraph("You can now sign in and start using CodeCrawler."),
+    cta(signInUrl, "Sign in"),
+  ]
+    .filter((part) => part.length > 0)
+    .join("\n");
+  return { subject, html: shell("Account approved", body) };
+}
+
+function renderSignupDenied(payload: Record<string, unknown>): RenderedEmail {
+  const name = str(payload, "name");
+  const reason = str(payload, "reason") || str(payload, "denialReason");
+  const supportEmail = str(payload, "supportEmail") || str(payload, "adminEmail");
+  const subject = "Your CodeCrawler sign-up request was denied";
+  const body = [
+    paragraph(
+      name
+        ? `Hi ${name}, we're sorry, but your request to join CodeCrawler was not approved at this time.`
+        : "Your request to join CodeCrawler was not approved at this time.",
+    ),
+    reason ? paragraph(`Reason: ${reason}`) : "",
+    supportEmail
+      ? paragraph(`If you believe this is a mistake, contact the administrator at ${supportEmail}.`)
+      : paragraph("If you believe this is a mistake, contact the instance administrator."),
+  ]
+    .filter((part) => part.length > 0)
+    .join("\n");
+  return { subject, html: shell("Sign-up request denied", body) };
+}
+
+function renderSignupPendingAdmin(payload: Record<string, unknown>): RenderedEmail {
+  const name = str(payload, "name");
+  const email = str(payload, "email");
+  const dashboardUrl =
+    str(payload, "dashboardUrl") || str(payload, "url") || webUrl("admin/signups");
+  const subject = "New sign-up request awaiting approval";
+  const body = [
+    paragraph("A new sign-up request is waiting in the approval queue."),
+    name ? paragraph(`Name: ${name}`) : "",
+    email ? paragraph(`Email: ${email}`) : "",
+    paragraph("Review and approve or deny the request from the Admin dashboard."),
+    cta(dashboardUrl, "Open sign-up requests"),
+  ]
+    .filter((part) => part.length > 0)
+    .join("\n");
+  return { subject, html: shell("New sign-up request", body) };
+}
+
+function renderAdminRoleGranted(payload: Record<string, unknown>): RenderedEmail {
+  const name = str(payload, "name");
+  const actor = str(payload, "actorName") || str(payload, "actor") || "An administrator";
+  const dashboardUrl = str(payload, "dashboardUrl") || str(payload, "url") || webUrl("admin");
+  const subject = "You are now a CodeCrawler administrator";
+  const body = [
+    paragraph(
+      name
+        ? `Hi ${name}, ${actor} granted you administrator access to CodeCrawler.`
+        : `${actor} granted you administrator access to CodeCrawler.`,
+    ),
+    paragraph(
+      "As an administrator you can manage sign-ups, control payment availability, and oversee users and teams from the Admin dashboard.",
+    ),
+    cta(dashboardUrl, "Open the Admin dashboard"),
+  ]
+    .filter((part) => part.length > 0)
+    .join("\n");
+  return { subject, html: shell("Administrator access granted", body) };
+}
+
+function renderAdminRoleRevoked(payload: Record<string, unknown>): RenderedEmail {
+  const name = str(payload, "name");
+  const actor = str(payload, "actorName") || str(payload, "actor") || "An administrator";
+  const subject = "Your administrator access was revoked";
+  const body = [
+    paragraph(
+      name
+        ? `Hi ${name}, ${actor} revoked your administrator access on CodeCrawler.`
+        : `${actor} revoked your administrator access on CodeCrawler.`,
+    ),
+    paragraph(
+      "Your account remains active — you just no longer have access to the Admin dashboard.",
+    ),
+  ]
+    .filter((part) => part.length > 0)
+    .join("\n");
+  return { subject, html: shell("Administrator access revoked", body) };
+}
+
+function renderAccountDisabled(payload: Record<string, unknown>): RenderedEmail {
+  const name = str(payload, "name");
+  const reason = str(payload, "reason");
+  const supportEmail = str(payload, "supportEmail") || str(payload, "adminEmail");
+  const subject = "Your CodeCrawler account was disabled";
+  const body = [
+    paragraph(
+      name
+        ? `Hi ${name}, your CodeCrawler account has been disabled by an administrator.`
+        : "Your CodeCrawler account has been disabled by an administrator.",
+    ),
+    reason ? paragraph(`Reason: ${reason}`) : "",
+    supportEmail
+      ? paragraph(`If you think this is an error, contact ${supportEmail}.`)
+      : paragraph("If you think this is an error, contact the instance administrator."),
+  ]
+    .filter((part) => part.length > 0)
+    .join("\n");
+  return { subject, html: shell("Account disabled", body) };
+}
+
 const TEMPLATES: Partial<Record<EmailEvent, (payload: Record<string, unknown>) => RenderedEmail>> =
   {
     welcome: renderWelcome,
@@ -767,6 +915,13 @@ const TEMPLATES: Partial<Record<EmailEvent, (payload: Record<string, unknown>) =
     "app-uninstalled": renderAppUninstalled,
     "connection-broken": renderConnectionBroken,
     "token-expired": renderTokenExpired,
+    "signup-received": renderSignupReceived,
+    "signup-approved": renderSignupApproved,
+    "signup-denied": renderSignupDenied,
+    "signup-pending-admin": renderSignupPendingAdmin,
+    "admin-role-granted": renderAdminRoleGranted,
+    "admin-role-revoked": renderAdminRoleRevoked,
+    "account-disabled": renderAccountDisabled,
   };
 
 export function renderEmail(event: EmailEvent, payload: Record<string, unknown>): RenderedEmail {

@@ -1,6 +1,7 @@
 import { db, schema } from "@codecrawler/db";
-import type { PlanId } from "@codecrawler/shared";
+import type { DepthTier, PlanId } from "@codecrawler/shared";
 import {
+  env,
   getPlanLimits,
   isHostedAllowedForPlan,
   isModelEligibleForPlan,
@@ -134,6 +135,41 @@ export function computeReviewCost(input: ReviewCostInput): number {
     input.sliceCount * input.reviewerWeight +
     0.5 * input.summarizerWeight;
   return Math.max(1, Math.round(cost * 100) / 100);
+}
+
+/**
+ * Conservative pre-run credit projection for the daily quota preflight. The
+ * static path charges model-weight units via {@link computeReviewCost}; the
+ * agentic path charges real token spend at the metered rate
+ * (spendUsd × CREDITS_PER_USD). We don't know the real spend until the run
+ * finishes, so the preflight reserves the tier's spend CEILING
+ * (REVIEW_AGENT_BUDGET_USD_*) converted to credits — the agent loop hard-caps
+ * spend at exactly that budget, so this can never under-reserve. The actual
+ * charge recorded after the run is lower (real spend), never higher.
+ */
+export function projectReviewCost(depth: DepthTier): number {
+  if (depth === "static") {
+    return computeReviewCost({
+      orchestratorWeight: 1,
+      reviewerWeight: 1,
+      summarizerWeight: 1,
+      sliceCount: 1,
+    });
+  }
+  const budgetUsd =
+    depth === "deep" ? env.REVIEW_AGENT_BUDGET_USD_DEEP : env.REVIEW_AGENT_BUDGET_USD_QUICK;
+  const credits = budgetUsd * env.CREDITS_PER_USD;
+  return Math.max(1, Math.round(credits * 100) / 100);
+}
+
+/**
+ * Convert real token spend (USD) into metered credits for an agentic review.
+ * Rounded to 4 dp to match the precision of the credits_cost column. BYOK runs
+ * return 0 (the team pays its own model provider directly).
+ */
+export function creditsFromSpend(spendUsd: number, billingMode: BillingMode): number {
+  if (billingMode === "byok") return 0;
+  return Math.round(spendUsd * env.CREDITS_PER_USD * 10000) / 10000;
 }
 
 function formatUtcDate(date: Date): string {

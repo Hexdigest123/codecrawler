@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invalidateAll } from "$app/navigation";
   import { ApiError, api } from "$lib/api";
+  import { toastError, toastSuccess } from "$lib/toast.svelte";
   import { PLAN_LABEL, type SsoConfig, type SsoProvider } from "$lib/types";
   import type { PageProps } from "./$types";
 
@@ -28,8 +29,6 @@
 
   let saving = $state(false);
   let deleting = $state(false);
-  let error = $state<string | null>(null);
-  let success = $state<string | null>(null);
 
   const samlCertConfigured = $derived(Boolean(existingConfig.certificate));
   const oidcSecretConfigured = $derived(Boolean(existingConfig.clientSecret));
@@ -96,8 +95,6 @@
     event.preventDefault();
     if (!canSave) return;
     saving = true;
-    error = null;
-    success = null;
     try {
       await api<{ ok: boolean }>(`/api/teams/${data.teamId}/sso`, {
         method: "POST",
@@ -107,10 +104,10 @@
           config: buildConfig(),
         }),
       });
-      success = "SSO configuration saved.";
+      toastSuccess("SSO configuration saved.");
       await invalidateAll();
     } catch (err) {
-      error = err instanceof ApiError ? err.message : "Could not save SSO.";
+      toastError(err instanceof ApiError ? err.message : "Could not save SSO.");
     } finally {
       saving = false;
     }
@@ -125,16 +122,14 @@
     )
       return;
     deleting = true;
-    error = null;
-    success = null;
     try {
       await api<{ ok: boolean }>(`/api/teams/${data.teamId}/sso`, {
         method: "DELETE",
       });
-      success = "SSO configuration removed.";
+      toastSuccess("SSO configuration removed.");
       await invalidateAll();
     } catch (err) {
-      error = err instanceof ApiError ? err.message : "Could not remove SSO.";
+      toastError(err instanceof ApiError ? err.message : "Could not remove SSO.");
     } finally {
       deleting = false;
     }
@@ -233,23 +228,6 @@
           </button>
         </div>
       </section>
-    {/if}
-
-    {#if error}
-      <p
-        role="alert"
-        class="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300"
-      >
-        {error}
-      </p>
-    {/if}
-    {#if success}
-      <p
-        role="status"
-        class="rounded-lg border border-green-300 bg-green-50 px-3 py-2 text-sm text-green-700 dark:border-green-900 dark:bg-green-950 dark:text-green-300"
-      >
-        {success}
-      </p>
     {/if}
 
     <form

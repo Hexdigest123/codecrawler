@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ApiError, api } from "$lib/api";
+  import { toastError } from "$lib/toast.svelte";
   import type { SsoProvider } from "$lib/types";
   import { goto } from "$app/navigation";
 
@@ -10,7 +11,6 @@
 
   let email = $state("");
   let loading = $state(false);
-  let error = $state<string | null>(null);
   let result = $state<ResolveResult | null>(null);
   let notFound = $state(false);
 
@@ -23,7 +23,6 @@
   async function submit(event: SubmitEvent) {
     event.preventDefault();
     if (disabled) return;
-    error = null;
     result = null;
     notFound = false;
     loading = true;
@@ -38,7 +37,7 @@
         notFound = true;
       }
     } catch (err) {
-      error = err instanceof ApiError ? err.message : "Could not resolve SSO.";
+      toastError(err instanceof ApiError ? err.message : "Could not resolve SSO.");
     } finally {
       loading = false;
     }
@@ -107,9 +106,6 @@
         />
       </label>
 
-      {#if error}
-        <p role="alert" class="text-sm text-red-600 dark:text-red-400">{error}</p>
-      {/if}
       {#if notFound}
         <p
           role="status"

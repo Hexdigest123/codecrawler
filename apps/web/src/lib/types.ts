@@ -1,5 +1,22 @@
 export type PlanId = "free" | "plus" | "pro";
 
+/** Agentic review depth tier (mirrors @codecrawler/shared DepthTier). */
+export type DepthTier = "static" | "quick" | "deep";
+
+export const DEPTH_TIERS: DepthTier[] = ["static", "quick", "deep"];
+
+export const DEPTH_LABEL: Record<DepthTier, string> = {
+  static: "Static",
+  quick: "Quick",
+  deep: "Deep",
+};
+
+export const DEPTH_DESCRIPTION: Record<DepthTier, string> = {
+  static: "Single-shot review (no tools). Cheapest.",
+  quick: "Agentic ReAct loop with read-only repo tools (≤6 steps).",
+  deep: "Full agentic exploration (≤12 steps). Plus/Pro only.",
+};
+
 export const PLAN_RANK: Record<PlanId, number> = {
   free: 0,
   plus: 1,
@@ -44,6 +61,8 @@ export interface TeamMembership {
 
 export interface MeResponse {
   user: User;
+  role?: string;
+  status?: string;
   teams: TeamMembership[];
 }
 
@@ -96,6 +115,8 @@ export interface NodeModels {
 export interface AgentProfile {
   id?: string;
   nodeModels: NodeModels;
+  coverageStrategy?: string | null;
+  defaultDepth?: DepthTier | null;
 }
 
 export type ApiKeyStatus = "valid" | "invalid" | "unverified";
@@ -155,6 +176,9 @@ export interface Review {
   status: string;
   walkthrough?: string | null;
   billingMode?: string | null;
+  depth?: DepthTier | null;
+  agentSteps?: number | null;
+  toolCalls?: number | null;
   creditsCost?: string | number;
   tokenSpendUsd?: string | number;
   modelIds?: string[] | null;
@@ -289,4 +313,64 @@ export interface AuditEntry {
   actorUserId?: string;
   metadata?: Record<string, unknown>;
   createdAt: string;
+}
+
+export type SignupMode = "open" | "closed" | "domain_restricted" | "approval";
+
+export const SIGNUP_MODE_LABEL: Record<SignupMode, string> = {
+  open: "Open",
+  closed: "Closed",
+  domain_restricted: "Domain-restricted",
+  approval: "Approval queue",
+};
+
+export interface SignupConfig {
+  signupMode: SignupMode;
+  allowedDomains: string[];
+  paymentsEnabled: boolean;
+}
+
+export interface AdminStats {
+  users: { total: number; admins: number; active: number; pending: number; denied: number };
+  teams: { total: number };
+  reviews: { total: number; byStatus: Record<string, number> };
+  tokens: { spendUsd: number; credits: number; usageCredits: number };
+  signups: { pending: number };
+  signupMode: SignupMode;
+  paymentsEnabled: boolean;
+}
+
+export interface AdminUser {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  status: string;
+  emailVerified: boolean;
+  createdAt: string;
+}
+
+export interface SignupRequestRow {
+  id: string;
+  userId: string;
+  email: string;
+  name: string | null;
+  status: string;
+  denialReason: string | null;
+  decidedBy: string | null;
+  decidedAt: string | null;
+  createdAt: string;
+}
+
+export interface AdminTeam {
+  id: string;
+  name: string;
+  slug: string | null;
+  createdAt: string;
+  plan: PlanId;
+  status: string;
+  members: number;
+  reviews: number;
+  tokenSpendUsd: number;
+  credits: number;
 }
