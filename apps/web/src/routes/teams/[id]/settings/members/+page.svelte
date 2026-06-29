@@ -358,9 +358,8 @@ async function deleteTeam() {
         <div>
           <p class="font-medium">Delete this team</p>
           <p class="mt-1 max-w-2xl text-sm text-neutral-600 dark:text-neutral-400">
-            Permanently removes the team along with its projects, reviews, security
-            scans, API keys, VCS connections and billing subscription. This cannot be
-            undone.
+            Permanently removes the team along with its projects, reviews, API keys,
+            VCS connections and billing subscription. This cannot be undone.
           </p>
         </div>
         <button

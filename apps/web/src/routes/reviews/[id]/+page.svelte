@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import GitPullRequest from "@lucide/svelte/icons/git-pull-request";
   import { api } from "$lib/api";
@@ -150,6 +151,18 @@
 </svelte:head>
 
 <section class="flex flex-col gap-8">
+  <nav aria-label="Breadcrumb" class="text-sm">
+    {#if project?.id}
+      <a
+        href={`/projects/${project.id}`}
+        class="inline-flex items-center gap-1 text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
+      >
+        <ArrowLeft class="size-4" />
+        Back to project
+      </a>
+    {/if}
+  </nav>
+
   <!-- PR header -->
   <header class="flex flex-wrap items-start justify-between gap-4">
     <div class="min-w-0">

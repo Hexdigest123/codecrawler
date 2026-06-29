@@ -1,5 +1,6 @@
 <script lang="ts">
 import { goto } from "$app/navigation";
+import ArrowLeft from "@lucide/svelte/icons/arrow-left";
 import { ApiError, api } from "$lib/api";
 import type { PageProps } from "./$types";
 
@@ -99,6 +100,15 @@ async function submit(event: SubmitEvent) {
 </svelte:head>
 
 <section class="mx-auto max-w-md py-6">
+  <nav aria-label="Breadcrumb" class="mb-4 text-sm">
+    <a
+      href={`/teams/${params.id}`}
+      class="inline-flex items-center gap-1 text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
+    >
+      <ArrowLeft class="size-4" />
+      Back to team
+    </a>
+  </nav>
   <h1 class="text-2xl font-semibold tracking-tight">Connect a repository</h1>
   <p class="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
     Add a project so CodeCrawler can review its pull requests.

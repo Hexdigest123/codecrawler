@@ -14,7 +14,6 @@
     "@codecrawler/ai": "workspace:*",
     "@codecrawler/db": "workspace:*",
     "@codecrawler/quotas": "workspace:*",
-    "@codecrawler/security": "workspace:*",
     "@codecrawler/shared": "workspace:*",
     "@codecrawler/vcs": "workspace:*",
     "@langchain/core": "^1.0.0",

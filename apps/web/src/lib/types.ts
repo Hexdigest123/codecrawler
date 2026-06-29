@@ -47,6 +47,15 @@ export interface MeResponse {
   teams: TeamMembership[];
 }
 
+export interface UsageState {
+  used: number;
+  limit: number | null;
+}
+
+export interface TeamUsage {
+  prReview: UsageState;
+}
+
 export interface TeamDetail {
   organization: { id: string; name: string; slug: string };
   role: string;
@@ -56,6 +65,7 @@ export interface TeamDetail {
   members?: Array<{ id: string }>;
   createdAt?: string;
   logo?: string | null;
+  usage?: TeamUsage;
 }
 
 export interface Project {
@@ -231,53 +241,6 @@ export interface ProjectReviewListItem {
 
 export interface ProjectReviewsResponse {
   items: ProjectReviewListItem[];
-}
-
-export type SecurityFindingKind = "sast" | "dep" | "secret" | "ai";
-
-export type Severity = "critical" | "high" | "medium" | "low" | "nitpick";
-
-export interface SecurityReportSummary {
-  id: string;
-  status: string;
-  summary?: string | null;
-  createdAt: string;
-  completedAt?: string | null;
-  criticalCount?: number | null;
-  highCount?: number | null;
-}
-
-export interface SecurityFinding {
-  id: string;
-  kind: SecurityFindingKind;
-  severity: Severity;
-  file?: string | null;
-  line?: number | null;
-  package?: string | null;
-  vulnVersion?: string | null;
-  fixedVersion?: string | null;
-  message: string;
-}
-
-export interface SecurityReportDetail {
-  report: {
-    id: string;
-    status: string;
-    summary?: string | null;
-    snykSource?: string | null;
-    billingMode?: string | null;
-    creditsCost?: string | number | null;
-    tokenSpendUsd?: string | number | null;
-    modelIds?: string[];
-    createdAt: string;
-    completedAt?: string | null;
-  };
-  findings: SecurityFinding[];
-}
-
-export interface TriggerSecurityScanResponse {
-  reportId: string;
-  status: string;
 }
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);

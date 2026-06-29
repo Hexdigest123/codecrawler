@@ -31,8 +31,6 @@ export type EmailEvent =
   | "review-completed"
   | "review-failed"
   | "review-digest"
-  | "security-scan-completed"
-  | "critical-finding-alert"
   | "quota-warning"
   | "quota-exceeded"
   | "app-installed"
@@ -211,50 +209,6 @@ function renderReviewDigest(payload: Record<string, unknown>): RenderedEmail {
   return { subject, html: shell("Review digest", body) };
 }
 
-function renderSecurityScanCompleted(payload: Record<string, unknown>): RenderedEmail {
-  const project = str(payload, "project") || str(payload, "projectId");
-  const summary = str(payload, "summary");
-  const url = str(payload, "reportUrl") || str(payload, "url");
-  const subject = project
-    ? `CodeCrawler security scan completed · ${project}`
-    : "CodeCrawler security scan completed";
-  const body = [
-    paragraph(
-      project
-        ? `Your security scan for ${project} finished without critical findings.`
-        : "Your security scan finished without critical findings.",
-    ),
-    codeBox(summary),
-    cta(url || webUrl("security"), "View the full report"),
-  ]
-    .filter((part) => part.length > 0)
-    .join("\n");
-  return { subject, html: shell("Security scan completed", body) };
-}
-
-function renderCriticalFindingAlert(payload: Record<string, unknown>): RenderedEmail {
-  const project = str(payload, "project") || str(payload, "projectId");
-  const count = str(payload, "count") || "one or more";
-  const summary = str(payload, "summary");
-  const url = str(payload, "reportUrl") || str(payload, "url");
-  const subject = project
-    ? `[Action required] CodeCrawler critical findings · ${project}`
-    : "[Action required] CodeCrawler critical findings";
-  const body = [
-    paragraph(
-      project
-        ? `A security scan of ${project} flagged ${count} critical finding(s) that need your attention.`
-        : `A security scan flagged ${count} critical finding(s) that need your attention.`,
-    ),
-    codeBox(summary),
-    cta(url || webUrl("security"), "Review critical findings now"),
-    paragraph("Critical findings should be triaged before merging or deploying."),
-  ]
-    .filter((part) => part.length > 0)
-    .join("\n");
-  return { subject, html: shell("Critical finding alert", body) };
-}
-
 function renderWelcome(payload: Record<string, unknown>): RenderedEmail {
   const name = str(payload, "name") || str(payload, "userName");
   const url = str(payload, "dashboardUrl") || str(payload, "url") || webUrl();
@@ -413,7 +367,7 @@ function renderTeamInvite(payload: Record<string, unknown>): RenderedEmail {
     paragraph(
       `${inviter} has invited you to join ${team}${role ? ` as ${role}` : ""} on CodeCrawler.`,
     ),
-    paragraph("Accept the invite to start collaborating on reviews and security scans."),
+    paragraph("Accept the invite to start collaborating on reviews."),
     cta(inviteUrl || webUrl("invites"), "Accept invite"),
   ]
     .filter((part) => part.length > 0)
@@ -500,7 +454,7 @@ function renderTeamCreated(payload: Record<string, unknown>): RenderedEmail {
   const subject = `Team created · ${team}`;
   const body = [
     paragraph(`${creator} created a new CodeCrawler team: ${team}.`),
-    paragraph("Invite teammates to start collaborating on reviews and security scans."),
+    paragraph("Invite teammates to start collaborating on reviews."),
     cta(url || webUrl("teams"), "Open team"),
   ]
     .filter((part) => part.length > 0)
@@ -748,7 +702,7 @@ function renderConnectionBroken(payload: Record<string, unknown>): RenderedEmail
       `CodeCrawler can no longer reach your ${provider} account${account ? ` ${account}` : ""}.`,
     ),
     reason ? paragraph(`Reason: ${reason}`) : "",
-    paragraph("Reconnect the integration to resume reviews and security scans."),
+    paragraph("Reconnect the integration to resume reviews."),
     cta(url || webUrl("settings/integrations"), "Reconnect account"),
   ]
     .filter((part) => part.length > 0)
@@ -770,7 +724,7 @@ function renderTokenExpired(payload: Record<string, unknown>): RenderedEmail {
           `The ${provider} access token for ${account || "your account"} expired on ${expiresAt}.`,
         )
       : paragraph(`The ${provider} access token for ${account || "your account"} has expired.`),
-    paragraph("Reconnect to resume reviews and security scans."),
+    paragraph("Reconnect to resume reviews."),
     cta(url || webUrl("settings/integrations"), "Reconnect account"),
   ]
     .filter((part) => part.length > 0)
@@ -807,8 +761,6 @@ const TEMPLATES: Partial<Record<EmailEvent, (payload: Record<string, unknown>) =
     "review-completed": renderReviewCompleted,
     "review-failed": renderReviewFailed,
     "review-digest": renderReviewDigest,
-    "security-scan-completed": renderSecurityScanCompleted,
-    "critical-finding-alert": renderCriticalFindingAlert,
     "quota-warning": renderQuotaWarning,
     "quota-exceeded": renderQuotaExceeded,
     "app-installed": renderAppInstalled,

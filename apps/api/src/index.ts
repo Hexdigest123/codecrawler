@@ -1,13 +1,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { connect as netConnect, type Socket } from "node:net";
 import { connect as tlsConnect } from "node:tls";
-import type {
-  NodeModels,
-  ReviewInput,
-  SecurityInput,
-  SecurityNodeModels,
-} from "@codecrawler/agents";
-import { getReviewGraphDescriptor, getSecurityGraphDescriptor } from "@codecrawler/agents";
+import type { NodeModels, ReviewInput } from "@codecrawler/agents";
+import { getReviewGraphDescriptor } from "@codecrawler/agents";
 import { fetchModelCatalog, verifyByokKey } from "@codecrawler/ai";
 import { auth } from "@codecrawler/auth";
 import {
@@ -21,12 +16,7 @@ import {
 import { client, db, schema } from "@codecrawler/db";
 import { enqueueEmail } from "@codecrawler/email";
 import { makeQueue } from "@codecrawler/queue";
-import {
-  checkQuota,
-  computeReviewCost,
-  computeSecurityCost,
-  getTeamPlan,
-} from "@codecrawler/quotas";
+import { checkQuota, computeReviewCost, getTeamPlan, getUsage } from "@codecrawler/quotas";
 import {
   DEFAULT_COVERAGE_STRATEGY,
   DEFAULT_NODE_MODELS,
@@ -502,11 +492,6 @@ const triggerReviewSchema = z.object({
     .optional(),
 });
 
-const securityScanSchema = z.object({
-  repoPath: z.string().min(1).optional(),
-  nodeModels: z.record(z.string(), z.string()).optional(),
-});
-
 const inviteMemberSchema = z.object({
   email: z.string().email(),
   role: z.enum(["member", "admin"]),
@@ -561,7 +546,7 @@ const BILLING_PLAN_CATALOG = [
     id: "plus" as const,
     label: "Plus",
     priceEur: 29,
-    features: ["50 PR reviews / day", "Weekly security scans", "5 members / team"],
+    features: ["50 PR reviews / day", "5 members / team"],
   },
   {
     id: "pro" as const,
@@ -575,10 +560,6 @@ type ReviewJobData = ReviewInput & {
   triggerEmail?: string;
 };
 
-type SecurityJobData = SecurityInput;
-
-const SECURITY_DEV_REPO_PATH = "/home/user/Projects/codecrawler";
-
 function extractNodeModels(raw: unknown): NodeModels {
   const obj = (raw as Record<string, unknown> | null) ?? {};
   return {
@@ -590,21 +571,7 @@ function extractNodeModels(raw: unknown): NodeModels {
   };
 }
 
-function extractSecurityNodeModels(raw: unknown): SecurityNodeModels {
-  const obj = (raw as Record<string, unknown> | null) ?? {};
-  return {
-    orchestrator:
-      typeof obj.orchestrator === "string" ? obj.orchestrator : DEFAULT_NODE_MODELS.orchestrator,
-    securityAnalyst:
-      typeof obj.securityAnalyst === "string"
-        ? obj.securityAnalyst
-        : DEFAULT_NODE_MODELS.securityAnalyst,
-    summarizer:
-      typeof obj.summarizer === "string" ? obj.summarizer : DEFAULT_NODE_MODELS.summarizer,
-  };
-}
-
-async function resolveOrgProfile(orgId: string, graphType: "pr_review" | "security") {
+async function resolveOrgProfile(orgId: string, graphType: "pr_review") {
   const rows = await db
     .select()
     .from(schema.agentProfiles)
@@ -1454,12 +1421,6 @@ app.post(
           nodeModels: DEFAULT_NODE_MODELS,
           coverageStrategy: DEFAULT_COVERAGE_STRATEGY,
         });
-        await tx.insert(schema.agentProfiles).values({
-          orgId,
-          graphType: "security",
-          nodeModels: DEFAULT_NODE_MODELS,
-          coverageStrategy: DEFAULT_COVERAGE_STRATEGY,
-        });
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1524,14 +1485,19 @@ app.get("/api/teams/:id", async (c) => {
     .from(schema.teamSubscriptions)
     .where(eq(schema.teamSubscriptions.orgId, orgId))
     .limit(1);
+  const plan = (sub?.plan ?? "free") as PlanId;
+  const prReview = await getUsage(orgId, "pr_review");
   return c.json({
     organization: { id: org.id, name: org.name, slug: org.slug },
     role: me.role,
-    plan: (sub?.plan ?? "free") as PlanId,
+    plan,
     status: sub?.status ?? "active",
     membersCount: memberRows.length,
     createdAt: org.createdAt,
     logo: org.logo,
+    usage: {
+      prReview,
+    },
   });
 });
 
@@ -1584,14 +1550,11 @@ app.delete("/api/teams/:id", async (c) => {
     ).map((p) => p.id);
 
     if (projectIds.length > 0) {
-      // Removing pull requests and security reports first cascades reviews/findings
-      // and clears the NO-ACTION profile_id references on agent_profiles.
+      // Removing pull requests first cascades reviews/findings and clears the
+      // NO-ACTION profile_id references on agent_profiles.
       await tx
         .delete(schema.pullRequests)
         .where(inArray(schema.pullRequests.projectId, projectIds));
-      await tx
-        .delete(schema.securityReports)
-        .where(inArray(schema.securityReports.projectId, projectIds));
     }
     // Order matters: agent_profiles (project_id NO-ACTION) before projects; then the
     // remaining NO-ACTION children; finally the org, which cascades member/sso/api_keys/usage.
@@ -1903,13 +1866,12 @@ app.get("/api/teams/:id/agent-profile", async (c) => {
   const user = c.get("user");
   const orgId = c.req.param("id");
   await requireOrgAccess(c, orgId, user.id);
-  const graphType = c.req.query("type") === "security" ? "security" : "pr_review";
-  const profile = await resolveOrgProfile(orgId, graphType);
+  const profile = await resolveOrgProfile(orgId, "pr_review");
   if (!profile) {
     return c.json({
       orgId,
       projectId: null,
-      graphType,
+      graphType: "pr_review",
       nodeModels: DEFAULT_NODE_MODELS,
       coverageStrategy: DEFAULT_COVERAGE_STRATEGY,
     });
@@ -1933,9 +1895,8 @@ app.put(
     const user = c.get("user");
     const orgId = c.req.param("id");
     await requireOrgAccess(c, orgId, user.id);
-    const graphType = c.req.query("type") === "security" ? "security" : "pr_review";
     const body = c.req.valid("json");
-    const existing = await resolveOrgProfile(orgId, graphType);
+    const existing = await resolveOrgProfile(orgId, "pr_review");
     if (existing) {
       const merged = {
         ...((existing.nodeModels as Record<string, string> | null) ?? {}),
@@ -1959,7 +1920,7 @@ app.put(
       .insert(schema.agentProfiles)
       .values({
         orgId,
-        graphType,
+        graphType: "pr_review",
         nodeModels,
         coverageStrategy: body.coverageStrategy ?? DEFAULT_COVERAGE_STRATEGY,
       })
@@ -1972,12 +1933,7 @@ app.get("/api/teams/:id/agent-graph/:type", async (c) => {
   const user = c.get("user");
   const orgId = c.req.param("id");
   await requireOrgAccess(c, orgId, user.id);
-  const type = c.req.param("type") === "security" ? "security" : "pr_review";
-  const profile = await resolveOrgProfile(orgId, type);
-  if (type === "security") {
-    const nodeModels = extractSecurityNodeModels(profile?.nodeModels);
-    return c.json(await getSecurityGraphDescriptor({ orgId, nodeModels }));
-  }
+  const profile = await resolveOrgProfile(orgId, "pr_review");
   const nodeModels = extractNodeModels(profile?.nodeModels);
   return c.json(await getReviewGraphDescriptor({ orgId, nodeModels }));
 });
@@ -1998,25 +1954,18 @@ app.put(
     const user = c.get("user");
     const orgId = c.req.param("id");
     await requireOrgAccess(c, orgId, user.id);
-    const type = c.req.param("type") === "security" ? "security" : "pr_review";
     const rawKey = c.req.param("key");
     const PR_REVIEW_NODE_KEYS: Record<string, string> = {
       PLAN: "orchestrator",
       REVIEW: "reviewer",
       SYNTHESIZE: "summarizer",
     };
-    const SECURITY_NODE_KEYS: Record<string, string> = {
-      PLAN: "orchestrator",
-      AI: "securityAnalyst",
-      SYNTHESIZE: "summarizer",
-    };
-    const map = type === "security" ? SECURITY_NODE_KEYS : PR_REVIEW_NODE_KEYS;
-    const key = map[rawKey];
+    const key = PR_REVIEW_NODE_KEYS[rawKey];
     if (!key) {
       throw new ApiError(400, "validation_error", "Invalid node key");
     }
     const body = c.req.valid("json");
-    const existing = await resolveOrgProfile(orgId, type);
+    const existing = await resolveOrgProfile(orgId, "pr_review");
     if (existing) {
       const current = (existing.nodeModels as Record<string, string> | null) ?? {};
       const merged = { ...current, [key]: body.modelId };
@@ -2028,16 +1977,12 @@ app.put(
       const base = { ...DEFAULT_NODE_MODELS, [key]: body.modelId };
       await db.insert(schema.agentProfiles).values({
         orgId,
-        graphType: type,
+        graphType: "pr_review",
         nodeModels: base,
         coverageStrategy: DEFAULT_COVERAGE_STRATEGY,
       });
     }
-    const refreshed = await resolveOrgProfile(orgId, type);
-    if (type === "security") {
-      const nodeModels = extractSecurityNodeModels(refreshed?.nodeModels);
-      return c.json(await getSecurityGraphDescriptor({ orgId, nodeModels }));
-    }
+    const refreshed = await resolveOrgProfile(orgId, "pr_review");
     const nodeModels = extractNodeModels(refreshed?.nodeModels);
     return c.json(await getReviewGraphDescriptor({ orgId, nodeModels }));
   },
@@ -2394,180 +2339,6 @@ app.get("/api/reviews/:id", async (c) => {
       category: f.category,
       message: f.message,
       suggestion: f.suggestion,
-    })),
-  });
-});
-
-app.get("/api/projects/:id/security", async (c) => {
-  const user = c.get("user");
-  const projectId = c.req.param("id");
-  const [project] = await db
-    .select()
-    .from(schema.projects)
-    .where(eq(schema.projects.id, projectId))
-    .limit(1);
-  if (!project) {
-    throw new ApiError(404, "not_found", "Project not found");
-  }
-  await requireOrgAccess(c, project.orgId, user.id);
-
-  const reports = await db
-    .select()
-    .from(schema.securityReports)
-    .where(eq(schema.securityReports.projectId, projectId))
-    .orderBy(desc(schema.securityReports.createdAt));
-
-  const countsByReport: Record<string, { critical: number; high: number }> = {};
-  const reportIds = reports.map((r) => r.id);
-  if (reportIds.length) {
-    const findings = await db
-      .select({
-        reportId: schema.securityFindings.reportId,
-        severity: schema.securityFindings.severity,
-      })
-      .from(schema.securityFindings)
-      .where(inArray(schema.securityFindings.reportId, reportIds));
-    for (const f of findings) {
-      const entry = countsByReport[f.reportId] ?? { critical: 0, high: 0 };
-      if (f.severity === "critical") entry.critical += 1;
-      else if (f.severity === "high") entry.high += 1;
-      countsByReport[f.reportId] = entry;
-    }
-  }
-
-  return c.json(
-    reports.map((r) => {
-      const cnt = countsByReport[r.id] ?? { critical: 0, high: 0 };
-      return {
-        id: r.id,
-        status: r.status,
-        summary: r.summary,
-        createdAt: r.createdAt,
-        completedAt: null,
-        criticalCount: cnt.critical,
-        highCount: cnt.high,
-      };
-    }),
-  );
-});
-
-app.post(
-  "/api/projects/:id/security/scan",
-  zValidator("json", securityScanSchema, (result, c) => {
-    if (!result.success) {
-      return jsonError(
-        c,
-        400,
-        "validation_error",
-        result.error.issues.map((i) => i.message).join("; "),
-      );
-    }
-  }),
-  async (c) => {
-    const user = c.get("user");
-    const projectId = c.req.param("id");
-    const [project] = await db
-      .select()
-      .from(schema.projects)
-      .where(eq(schema.projects.id, projectId))
-      .limit(1);
-    if (!project) {
-      throw new ApiError(404, "not_found", "Project not found");
-    }
-    const orgId = project.orgId;
-    await requireOrgAccess(c, orgId, user.id);
-    await requirePlan(c, orgId, "plus");
-
-    const body = c.req.valid("json");
-
-    const projectedCost = computeSecurityCost({
-      orchestratorWeight: 1,
-      analystWeight: 1,
-      scopeCount: 1,
-    });
-    const quota = await checkQuota(orgId, "security_review", projectedCost);
-    if (!quota.allowed) {
-      throw new ApiError(
-        402,
-        quota.reason ?? "quota_exceeded",
-        quota.message ?? "Security scan quota exceeded",
-      );
-    }
-
-    const profile = await resolveOrgProfile(orgId, "security");
-    const [report] = await db
-      .insert(schema.securityReports)
-      .values({
-        projectId,
-        profileId: profile?.id ?? null,
-        status: "running",
-        billingMode: "hosted",
-      })
-      .returning();
-
-    const repoPath = body.repoPath ?? SECURITY_DEV_REPO_PATH;
-    const jobData = {
-      orgId,
-      projectId,
-      reportId: report.id,
-      repoPath,
-      nodeModels: body.nodeModels ?? (profile?.nodeModels as Record<string, string> | undefined),
-      profileId: profile?.id,
-      triggerEmail: user.email,
-    } as SecurityJobData;
-
-    const queue = makeQueue("security");
-    await queue.add("security", jobData);
-    await queue.close().catch(() => undefined);
-
-    return c.json({ reportId: report.id, status: "queued" }, 202);
-  },
-);
-
-app.get("/api/security-reports/:id", async (c) => {
-  const user = c.get("user");
-  const reportId = c.req.param("id");
-  const [report] = await db
-    .select()
-    .from(schema.securityReports)
-    .where(eq(schema.securityReports.id, reportId))
-    .limit(1);
-  if (!report) {
-    throw new ApiError(404, "not_found", "Security report not found");
-  }
-  const [project] = await db
-    .select()
-    .from(schema.projects)
-    .where(eq(schema.projects.id, report.projectId))
-    .limit(1);
-  if (project) {
-    await requireOrgAccess(c, project.orgId, user.id);
-  }
-
-  const findings = await db
-    .select()
-    .from(schema.securityFindings)
-    .where(eq(schema.securityFindings.reportId, reportId));
-
-  const extra = (report.snykRaw as Record<string, unknown> | null) ?? {};
-
-  return c.json({
-    report: {
-      ...report,
-      snykSource: typeof extra.snykSource === "string" ? extra.snykSource : null,
-      modelIds: Array.isArray(extra.modelIds) ? (extra.modelIds as string[]) : null,
-      completedAt: extra.completedAt ?? null,
-    },
-    findings: findings.map((f) => ({
-      id: f.id,
-      kind: f.kind,
-      severity: f.severity,
-      file: f.file,
-      line: f.line,
-      package: f.packageName,
-      vulnVersion: f.vulnVersion,
-      fixedVersion: f.fixedVersion,
-      message: f.message,
     })),
   });
 });

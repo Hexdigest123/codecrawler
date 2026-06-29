@@ -14,7 +14,7 @@ export const PROVIDERS = [
 
 export type ProviderId = (typeof PROVIDERS)[number];
 
-export const GRAPH_TYPES = ["pr_review", "security"] as const;
+export const GRAPH_TYPES = ["pr_review"] as const;
 export type GraphType = (typeof GRAPH_TYPES)[number];
 
 export const COVERAGE_STRATEGIES = ["by_commit", "by_filegroup", "full"] as const;
@@ -22,12 +22,7 @@ export type CoverageStrategy = (typeof COVERAGE_STRATEGIES)[number];
 
 export const DEFAULT_COVERAGE_STRATEGY: CoverageStrategy = "by_filegroup";
 
-export const REVIEW_NODE_ROLES = [
-  "orchestrator",
-  "reviewer",
-  "summarizer",
-  "securityAnalyst",
-] as const;
+export const REVIEW_NODE_ROLES = ["orchestrator", "reviewer", "summarizer"] as const;
 export type ReviewNodeRole = (typeof REVIEW_NODE_ROLES)[number];
 
 export const BILLING_MODES = ["hosted", "byok", "mixed"] as const;
@@ -40,5 +35,4 @@ export const DEFAULT_NODE_MODELS: Record<ReviewNodeRole, string> = {
   orchestrator: "minimax/minimax-m3",
   reviewer: "minimax/minimax-m3",
   summarizer: "minimax/minimax-m3",
-  securityAnalyst: "minimax/minimax-m3",
 };

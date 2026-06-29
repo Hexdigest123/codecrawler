@@ -10,7 +10,7 @@ import {
 } from "@codecrawler/shared";
 import { and, eq, inArray, sql } from "drizzle-orm";
 
-export type QuotaKind = "pr_review" | "security_review";
+export type QuotaKind = "pr_review";
 export type BillingMode = "hosted" | "byok" | "mixed";
 
 export {
@@ -38,12 +38,6 @@ export interface ReviewCostInput {
   reviewerWeight: number;
   summarizerWeight: number;
   sliceCount: number;
-}
-
-export interface SecurityCostInput {
-  orchestratorWeight: number;
-  analystWeight: number;
-  scopeCount: number;
 }
 
 export function periodKey(kind: QuotaKind, date: Date = new Date()): string {
@@ -77,7 +71,7 @@ export async function getUsage(orgId: string, kind: QuotaKind): Promise<QuotaSta
   const used = raw === undefined || raw === null ? 0 : Number.parseFloat(String(raw)) || 0;
   const plan = await getTeamPlan(orgId);
   const limits = getPlanLimits(plan);
-  const limit = kind === "pr_review" ? limits.hostedReviewsPerDay : limits.securityReviewsPerWeek;
+  const limit = limits.hostedReviewsPerDay;
   return { used, limit };
 }
 
@@ -139,11 +133,6 @@ export function computeReviewCost(input: ReviewCostInput): number {
     0.5 * input.orchestratorWeight +
     input.sliceCount * input.reviewerWeight +
     0.5 * input.summarizerWeight;
-  return Math.max(1, Math.round(cost * 100) / 100);
-}
-
-export function computeSecurityCost(input: SecurityCostInput): number {
-  const cost = 0.5 * input.orchestratorWeight + input.scopeCount * input.analystWeight;
   return Math.max(1, Math.round(cost * 100) / 100);
 }
 

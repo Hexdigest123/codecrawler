@@ -18,7 +18,7 @@ export const providerEnum = pgEnum("provider", [
   "saia",
 ]);
 
-export const graphTypeEnum = pgEnum("graph_type", ["pr_review", "security"]);
+export const graphTypeEnum = pgEnum("graph_type", ["pr_review"]);
 
 export const coverageStrategyEnum = pgEnum("coverage_strategy", [
   "by_commit",
@@ -43,13 +43,6 @@ export const reviewCategoryEnum = pgEnum("review_category", [
   "performance",
   "nitpick",
   "praise",
-]);
-
-export const securityFindingKindEnum = pgEnum("security_finding_kind", [
-  "sast",
-  "dep",
-  "secret",
-  "ai",
 ]);
 
 export const severityEnum = pgEnum("severity", ["critical", "high", "medium", "low", "nitpick"]);

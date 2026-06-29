@@ -1,5 +1,5 @@
-import type { ReviewInput, ReviewResult, SecurityInput, SecurityResult } from "@codecrawler/agents";
-import { runReview, runSecurity } from "@codecrawler/agents";
+import type { ReviewInput, ReviewResult } from "@codecrawler/agents";
+import { runReview } from "@codecrawler/agents";
 import { syncSubscription } from "@codecrawler/billing";
 import { db, schema } from "@codecrawler/db";
 import { enqueueEmail } from "@codecrawler/email";
@@ -17,7 +17,6 @@ import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import IORedis from "ioredis";
 
 type ReviewJobData = ReviewInput & { triggerEmail?: string };
-type SecurityJobData = SecurityInput;
 type PaymentsJobData = { orgId: string };
 
 const RECONCILE_JOB = "payments:reconcile";
@@ -53,20 +52,6 @@ async function markReviewFailed(reviewId: string | undefined, error: string) {
   }
 }
 
-async function markSecurityReportFailed(reportId: string | undefined, error: string) {
-  if (!reportId) {
-    return;
-  }
-  try {
-    await db
-      .update(schema.securityReports)
-      .set({ status: "failed", summary: error })
-      .where(eq(schema.securityReports.id, reportId));
-  } catch (err) {
-    console.error("[worker] failed to mark security report as failed", err);
-  }
-}
-
 async function getOrgOwnerEmails(orgId: string): Promise<string[]> {
   const rows = await db
     .select({ email: schema.user.email })
@@ -78,7 +63,7 @@ async function getOrgOwnerEmails(orgId: string): Promise<string[]> {
 
 async function notifyQuotaIfCrossed(
   orgId: string,
-  kind: "pr_review" | "security_review",
+  kind: "pr_review",
   actorEmail?: string,
 ): Promise<void> {
   try {
@@ -99,7 +84,7 @@ async function notifyQuotaIfCrossed(
     }
     const emails = await getOrgAdminEmails(orgId);
     const event = t.crossed === "exceeded" ? "quota-exceeded" : "quota-warning";
-    const period = kind === "pr_review" ? "today" : "this week";
+    const period = "today";
     const payload = {
       kind,
       used,
@@ -192,67 +177,6 @@ worker.on("failed", (job, err) => {
 
 worker.on("ready", () => {
   console.log(`[worker] reviews worker registered on queue "${QUEUE_NAMES.reviews}"`);
-});
-
-const securityWorker = new Worker(
-  QUEUE_NAMES.security,
-  async (job) => {
-    const data = job.data as SecurityJobData;
-    const reportId = data.reportId;
-    const triggerEmail = data.triggerEmail;
-
-    try {
-      const result: SecurityResult = await runSecurity(data);
-
-      if (result.status === "completed") {
-        const credits = Number(result.creditsCost ?? 0);
-        if (Number.isFinite(credits) && credits > 0) {
-          try {
-            await recordUsage(data.orgId, "security_review", credits);
-          } catch (err) {
-            console.error("[worker] recordUsage (security) failed", err);
-          }
-          await notifyQuotaIfCrossed(data.orgId, "security_review", triggerEmail);
-        }
-        if (triggerEmail) {
-          const criticalCount =
-            result.findings?.filter((f) => f.severity === "critical").length ?? 0;
-          if (criticalCount > 0) {
-            await enqueueEmail("critical-finding-alert", triggerEmail, {
-              projectId: data.projectId,
-              reportId,
-              summary: result.summary ?? "",
-              count: criticalCount,
-            }).catch((err: unknown) => {
-              console.error("[worker] critical-finding-alert email failed", err);
-            });
-          } else {
-            await enqueueEmail("security-scan-completed", triggerEmail, {
-              projectId: data.projectId,
-              reportId,
-              summary: result.summary ?? "",
-            }).catch((err: unknown) => {
-              console.error("[worker] security-scan-completed email failed", err);
-            });
-          }
-        }
-      }
-      return result;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Worker error";
-      await markSecurityReportFailed(reportId, message);
-      throw err;
-    }
-  },
-  { connection: connection as never, concurrency: 2 },
-);
-
-securityWorker.on("failed", (job, err) => {
-  console.error(`[worker] security job ${job?.id ?? "?"} failed`, err);
-});
-
-securityWorker.on("ready", () => {
-  console.log(`[worker] security worker registered on queue "${QUEUE_NAMES.security}"`);
 });
 
 const paymentsWorker = new Worker(
@@ -376,7 +300,6 @@ async function shutdown(signal: string) {
   shuttingDown = true;
   console.log(`[worker] received ${signal}, shutting down`);
   await worker.close().catch(() => undefined);
-  await securityWorker.close().catch(() => undefined);
   await paymentsWorker.close().catch(() => undefined);
   await scheduledWorker.close().catch(() => undefined);
   await paymentsQueue.close().catch(() => undefined);

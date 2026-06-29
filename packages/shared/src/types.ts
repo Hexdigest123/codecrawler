@@ -27,10 +27,6 @@ export type ApiKeyProvider =
 
 export type ReviewStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
-export type SecurityFindingKind = "sast" | "dep" | "secret" | "ai";
-
-export type SecurityReportStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
-
 export type VcsProvider = "github" | "gitlab" | "gitea";
 
 export interface ReviewFinding {
@@ -40,15 +36,4 @@ export interface ReviewFinding {
   category: string;
   message: string;
   suggestion?: string;
-}
-
-export interface SecurityFinding {
-  kind: SecurityFindingKind;
-  severity: Severity;
-  file?: string;
-  line?: number;
-  package?: string;
-  vulnVersion?: string;
-  fixedVersion?: string;
-  message: string;
 }

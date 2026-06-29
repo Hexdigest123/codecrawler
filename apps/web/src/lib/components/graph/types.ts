@@ -1,8 +1,8 @@
-export type AgentRole = "orchestrator" | "reviewer" | "summarizer" | "securityAnalyst" | "fixed";
+export type AgentRole = "orchestrator" | "reviewer" | "summarizer" | "fixed";
 
 export type GraphGateway = "openrouter" | "saia";
 
-export type GraphType = "pr_review" | "security";
+export type GraphType = "pr_review";
 
 export interface GraphNode {
   key: string;
@@ -46,7 +46,6 @@ export function roleLabel(role: string): string {
   if (role === "orchestrator") return "Orchestrator";
   if (role === "reviewer") return "Reviewer";
   if (role === "summarizer") return "Summarizer";
-  if (role === "securityAnalyst") return "Security analyst";
   if (role === "fixed") return "Pipeline";
   return role;
 }

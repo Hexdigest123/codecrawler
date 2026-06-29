@@ -1,10 +1,10 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
+  import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import GitPullRequest from "@lucide/svelte/icons/git-pull-request";
   import Loader from "@lucide/svelte/icons/loader-circle";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
-  import ShieldCheck from "@lucide/svelte/icons/shield-check";
   import { ApiError, api } from "$lib/api";
   import type {
     OpenPullRequest,
@@ -19,6 +19,9 @@
   const changeNoun = $derived(provider === "gitlab" ? "MR" : "PR");
   const providerLabel = $derived(
     provider === "gitlab" ? "GitLab" : provider === "gitea" ? "Gitea" : "GitHub",
+  );
+  const teamHref = $derived(
+    data.project?.orgId ? `/teams/${data.project.orgId}` : "/dashboard",
   );
 
   const openPulls = $state<OpenPullRequest[]>([]);
@@ -100,6 +103,16 @@
 </svelte:head>
 
 <section class="flex flex-col gap-8">
+  <nav aria-label="Breadcrumb" class="text-sm">
+    <a
+      href={teamHref}
+      class="inline-flex items-center gap-1 text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
+    >
+      <ArrowLeft class="size-4" />
+      Back to team
+    </a>
+  </nav>
+
   <header>
     <h1 class="text-2xl font-semibold tracking-tight">{data.project?.name ?? "Project"}</h1>
     <p class="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
@@ -261,22 +274,4 @@
     {/if}
   </section>
 
-  <section class="rounded-xl border border-neutral-200 p-5 dark:border-neutral-800">
-    <div class="flex flex-wrap items-center justify-between gap-3">
-      <div>
-        <h2 class="text-sm font-semibold uppercase tracking-wide text-neutral-500">Security</h2>
-        <p class="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
-          Whole-project scan: Snyk deps + SAST, secret detection, and an AI
-          vulnerability analyst.
-        </p>
-      </div>
-      <a
-        href={`/projects/${data.projectId}/security`}
-        class="inline-flex items-center gap-1.5 rounded-md border border-brand-600 px-3 py-1.5 text-xs font-medium text-brand-700 hover:bg-brand-50 dark:text-brand-300 dark:hover:bg-brand-950"
-      >
-        <ShieldCheck class="size-3.5" />
-        Open Security tab
-      </a>
-    </div>
-  </section>
 </section>

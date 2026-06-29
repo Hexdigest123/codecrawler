@@ -7,7 +7,6 @@ export * from "./enums";
 export * from "./model_weights";
 export * from "./projects";
 export * from "./reviews";
-export * from "./security";
 export * from "./usage";
 export * from "./vcs";
 
@@ -28,7 +27,6 @@ import type { teamSubscriptions } from "./billing";
 import type { modelWeights } from "./model_weights";
 import type { projects } from "./projects";
 import type { pullRequests, reviewFindings, reviews } from "./reviews";
-import type { securityFindings, securityReports } from "./security";
 import type { usage } from "./usage";
 import type { vcsConnections } from "./vcs";
 
@@ -62,10 +60,6 @@ export type Review = typeof reviews.$inferSelect;
 export type NewReview = typeof reviews.$inferInsert;
 export type ReviewFinding = typeof reviewFindings.$inferSelect;
 export type NewReviewFinding = typeof reviewFindings.$inferInsert;
-export type SecurityReport = typeof securityReports.$inferSelect;
-export type NewSecurityReport = typeof securityReports.$inferInsert;
-export type SecurityFinding = typeof securityFindings.$inferSelect;
-export type NewSecurityFinding = typeof securityFindings.$inferInsert;
 export type Usage = typeof usage.$inferSelect;
 export type NewUsage = typeof usage.$inferInsert;
 export type ApiKey = typeof apiKeys.$inferSelect;
