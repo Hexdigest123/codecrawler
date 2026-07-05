@@ -17,7 +17,7 @@
     "@langchain/core": "^1.2.1",
     "@langchain/google-genai": "^2.2.0",
     "@langchain/openai": "^1.5.3",
-    "drizzle-orm": "^0.38.0"
+    "drizzle-orm": "^0.45.2"
   },
   "devDependencies": {
     "typescript": "^5.9.0"
