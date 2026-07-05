@@ -25,8 +25,8 @@ codecrawler.merckel.dev {
 		Referrer-Policy "strict-origin-when-cross-origin"
 	}
 
-	# API surface: REST, Better Auth (/api/auth/*), and the inbound webhooks
-	# (/api/webhooks/{github,gitlab,gitea}, /api/payments/webhook).
+	# API surface: REST, Better Auth (/api/auth/*), and the Mollie webhook
+	# (/api/payments/webhook).
 	@api path /api/*
 	handle @api {
 		reverse_proxy api:3001
@@ -40,8 +40,8 @@ codecrawler.merckel.dev {
 }
 
 # -----------------------------------------------------------------------------
-# OPTIONAL dedicated API/webhook subdomain. Uncomment if you prefer to keep
-# programmatic + webhook traffic on api.codecrawler.merckel.dev (point its DNS
+# OPTIONAL dedicated API subdomain. Uncomment if you prefer to keep
+# programmatic + payments traffic on api.codecrawler.merckel.dev (point its DNS
 # record at this VPS first). The /api/* path on the apex site above stays in
 # place either way so browser-relative calls keep working.
 # -----------------------------------------------------------------------------

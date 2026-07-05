@@ -1,4 +1,6 @@
+import { db, schema } from "@codecrawler/db";
 import { env } from "@codecrawler/shared";
+import { eq } from "drizzle-orm";
 import nodemailer from "nodemailer";
 
 type Transporter = nodemailer.Transporter;
@@ -45,6 +47,26 @@ export type EmailEvent =
   | "admin-role-revoked"
   | "account-disabled";
 
+// Preference categories matching the columns on notification_settings.
+type NotificationCategory = "reviews" | "teams" | "billing" | "integrations";
+
+// Informational events that respect the user's notification preferences.
+// Every event NOT listed here is transactional (account, security, access
+// control, billing/payment) and is ALWAYS sent, regardless of preferences —
+// a user must never miss a payment-failed or password-changed notice because
+// they muted a category. Only the "nice to know" notifications below are
+// gated by preferences.
+const INFORMATIONAL_EVENTS: Partial<Record<EmailEvent, NotificationCategory>> = {
+  "review-completed": "reviews",
+  "review-failed": "reviews",
+  "review-digest": "reviews",
+  "quota-warning": "reviews",
+  "quota-exceeded": "reviews",
+  "subscription-renewing": "billing",
+  "app-installed": "integrations",
+  "app-uninstalled": "integrations",
+};
+
 export interface RenderedEmail {
   subject: string;
   html: string;
@@ -85,22 +107,32 @@ function escapeHtml(input: string): string {
 }
 
 function shell(title: string, bodyHtml: string): string {
+  const logoUrl = webUrl("logo.webp");
   return [
     "<!doctype html>",
     '<html lang="en">',
     "<head>",
     '<meta charset="utf-8" />',
     '<meta name="viewport" content="width=device-width, initial-scale=1" />',
+    '<meta name="color-scheme" content="light only" />',
+    '<meta name="supported-color-schemes" content="light only" />',
     `<title>${escapeHtml(title)}</title>`,
     "</head>",
-    '<body style="margin:0;padding:0;background:#f5f5f5;font-family:ui-sans-serif,system-ui,Arial,sans-serif;color:#171717;">',
-    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 0;">',
-    '<tr><td align="center">',
-    '<table role="presentation" width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;overflow:hidden;">',
-    '<tr><td style="padding:24px 24px 8px 24px;font-size:18px;font-weight:600;">CodeCrawler</td></tr>',
-    `<tr><td style="padding:0 24px 8px 24px;font-size:20px;font-weight:600;">${escapeHtml(title)}</td></tr>`,
-    `<tr><td style="padding:8px 24px 24px 24px;font-size:15px;line-height:1.5;">${bodyHtml}</td></tr>`,
-    '<tr><td style="padding:0 24px 24px 24px;font-size:12px;color:#737373;">Sent by CodeCrawler.</td></tr>',
+    '<body style="margin:0;padding:0;background:#f4f4f5;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#18181b;-webkit-font-smoothing:antialiased;">',
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f5;">',
+    '<tr><td align="center" style="padding:32px 16px;">',
+    '<table role="presentation" width="560" cellpadding="0" cellspacing="0" style="width:560px;max-width:100%;background:#ffffff;border:1px solid #e4e4e7;border-radius:16px;overflow:hidden;">',
+    '<tr><td style="padding:28px 40px 0 40px;">',
+    `<img src="${escapeHtml(logoUrl)}" alt="CodeCrawler" width="160" height="30" style="display:block;width:160px;height:30px;border:0;outline:none;text-decoration:none;" />`,
+    "</td></tr>",
+    `<tr><td style="padding:24px 40px 0 40px;font-size:22px;font-weight:600;line-height:1.3;letter-spacing:-0.01em;color:#18181b;">${escapeHtml(title)}</td></tr>`,
+    `<tr><td style="padding:16px 40px 32px 40px;font-size:15px;line-height:1.6;color:#3f3f46;">${bodyHtml}</td></tr>`,
+    '<tr><td style="padding:0 40px;">',
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td style="border-top:1px solid #f4f4f5;font-size:0;line-height:0;">&nbsp;</td></tr></table>',
+    "</td></tr>",
+    '<tr><td style="padding:20px 40px 28px 40px;font-size:12px;line-height:1.5;color:#a1a1aa;">',
+    `Sent by CodeCrawler.&nbsp;&nbsp;<a href="${escapeHtml(webUrl("account/notifications"))}" style="color:#a1a1aa;text-decoration:underline;">Notification preferences</a>`,
+    "</td></tr>",
     "</table>",
     "</td></tr>",
     "</table>",
@@ -110,25 +142,21 @@ function shell(title: string, bodyHtml: string): string {
 }
 
 function paragraph(text: string): string {
-  return `<p style="margin:0 0 12px 0;">${escapeHtml(text)}</p>`;
-}
-
-function link(href: string, label: string): string {
-  return `<a href="${escapeHtml(href)}" style="color:#4f46e5;">${escapeHtml(label)}</a>`;
+  return `<p style="margin:0 0 14px 0;">${escapeHtml(text)}</p>`;
 }
 
 function cta(href: string, label: string): string {
   if (!href) {
     return "";
   }
-  return `<p style="margin:12px 0 0 0;">${link(href, label)}</p>`;
+  return `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:20px 0 4px 0;"><tr><td style="border-radius:10px;background:#4f46e5;"><a href="${escapeHtml(href)}" style="display:inline-block;padding:12px 22px;font-size:14px;font-weight:600;font-family:inherit;color:#ffffff;text-decoration:none;border-radius:10px;">${escapeHtml(label)}</a></td></tr></table>`;
 }
 
 function codeBox(text: string): string {
   if (!text) {
     return "";
   }
-  return `<pre style="white-space:pre-wrap;background:#fafafa;border:1px solid #e5e5e5;border-radius:8px;padding:12px;font-size:13px;margin:0 0 12px 0;">${escapeHtml(text)}</pre>`;
+  return `<pre style="white-space:pre-wrap;word-break:break-word;background:#fafafa;border:1px solid #f4f4f5;border-radius:10px;padding:14px 16px;font-size:13px;line-height:1.5;margin:0 0 16px 0;color:#3f3f46;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;">${escapeHtml(text)}</pre>`;
 }
 
 function webUrl(path = ""): string {
@@ -937,6 +965,27 @@ export async function enqueueEmail(
   to: string,
   payload: Record<string, unknown>,
 ): Promise<void> {
+  // Account, security, access-control and billing/payment events are
+  // transactional — they are always sent regardless of notification
+  // preferences. Only informational events (reviews, quota heads-ups,
+  // renewal reminders, app installs) are gated by the user's preferences.
+  const category = INFORMATIONAL_EVENTS[event];
+  if (category) {
+    try {
+      const userId = await getUserIdByEmail(to);
+      if (userId) {
+        const settings = await getNotificationSettings(userId);
+        if (!settings[category]) {
+          console.log(`[email] skipped event=${event} to=${to} (preference "${category}" off)`);
+          return;
+        }
+      }
+    } catch (err) {
+      // If the preference lookup fails we fall through and send — never
+      // silently drop an email because of a lookup error.
+      console.warn(`[email] preference lookup failed for ${to}, sending anyway`, err);
+    }
+  }
   try {
     const { subject, html } = renderEmail(event, payload);
     await getTransporter().sendMail({
@@ -949,4 +998,79 @@ export async function enqueueEmail(
   } catch (err) {
     console.error(`[email] failed event=${event} to=${to}`, err);
   }
+}
+
+async function getUserIdByEmail(email: string): Promise<string | null> {
+  const [row] = await db
+    .select({ id: schema.user.id })
+    .from(schema.user)
+    .where(eq(schema.user.email, email))
+    .limit(1);
+  return row?.id ?? null;
+}
+
+export interface NotificationSettings {
+  reviews: boolean;
+  teams: boolean;
+  billing: boolean;
+  integrations: boolean;
+}
+
+const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
+  reviews: true,
+  teams: true,
+  billing: true,
+  integrations: true,
+};
+
+// Users without a persisted row are treated as "all notifications on" so the
+// feature is opt-out without backfilling rows for every existing user.
+export async function getNotificationSettings(userId: string): Promise<NotificationSettings> {
+  const rows = await db
+    .select()
+    .from(schema.notificationSettings)
+    .where(eq(schema.notificationSettings.userId, userId))
+    .limit(1);
+  const row = rows[0];
+  if (!row) {
+    return { ...DEFAULT_NOTIFICATION_SETTINGS };
+  }
+  return {
+    reviews: row.reviews,
+    teams: row.teams,
+    billing: row.billing,
+    integrations: row.integrations,
+  };
+}
+
+export async function upsertNotificationSettings(
+  userId: string,
+  settings: NotificationSettings,
+): Promise<NotificationSettings> {
+  const [row] = await db
+    .insert(schema.notificationSettings)
+    .values({
+      userId,
+      reviews: settings.reviews,
+      teams: settings.teams,
+      billing: settings.billing,
+      integrations: settings.integrations,
+    })
+    .onConflictDoUpdate({
+      target: schema.notificationSettings.userId,
+      set: {
+        reviews: settings.reviews,
+        teams: settings.teams,
+        billing: settings.billing,
+        integrations: settings.integrations,
+        updatedAt: new Date(),
+      },
+    })
+    .returning();
+  return {
+    reviews: row.reviews,
+    teams: row.teams,
+    billing: row.billing,
+    integrations: row.integrations,
+  };
 }

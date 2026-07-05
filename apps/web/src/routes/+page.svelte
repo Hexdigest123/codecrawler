@@ -10,6 +10,7 @@ import ShieldCheck from "@lucide/svelte/icons/shield-check";
 import Sparkles from "@lucide/svelte/icons/sparkles";
 import Workflow from "@lucide/svelte/icons/workflow";
 import Brand from "$lib/components/Brand.svelte";
+import Faq from "$lib/components/Faq.svelte";
 
 const metrics = [
   { value: "92%", label: "less manual review drag" },
@@ -382,13 +383,6 @@ const faqs = [
       <p class="text-sm font-bold uppercase tracking-[0.24em] text-brand-600">FAQ</p>
       <h2 class="mt-3 text-4xl font-black tracking-tight text-neutral-950 dark:text-white">Questions engineering leaders ask first.</h2>
     </div>
-    <div class="space-y-3">
-      {#each faqs as faq}
-        <details class="group rounded-3xl border border-neutral-200 bg-white p-5 shadow-sm shadow-neutral-950/5 dark:border-neutral-800 dark:bg-neutral-950">
-          <summary class="cursor-pointer list-none text-lg font-bold text-neutral-950 marker:hidden dark:text-white">{faq.question}</summary>
-          <p class="mt-3 leading-7 text-neutral-600 dark:text-neutral-400">{faq.answer}</p>
-        </details>
-      {/each}
-    </div>
+    <Faq {faqs} />
   </section>
 </div>

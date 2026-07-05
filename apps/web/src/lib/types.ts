@@ -66,6 +66,43 @@ export interface MeResponse {
   teams: TeamMembership[];
 }
 
+export type NotificationCategoryKey = "reviews" | "teams" | "billing" | "integrations";
+
+export type NotificationSettings = Record<NotificationCategoryKey, boolean>;
+
+export interface NotificationSettingsResponse {
+  settings: NotificationSettings;
+}
+
+export interface NotificationCategoryMeta {
+  key: NotificationCategoryKey;
+  label: string;
+  description: string;
+}
+
+export const NOTIFICATION_CATEGORIES: NotificationCategoryMeta[] = [
+  {
+    key: "reviews",
+    label: "Reviews",
+    description: "Review completions, failures, and digests for your pull requests.",
+  },
+  {
+    key: "teams",
+    label: "Teams & collaboration",
+    description: "Team invitations, membership changes, and role updates.",
+  },
+  {
+    key: "billing",
+    label: "Billing & quota",
+    description: "Subscriptions, payments, plan changes, and quota warnings.",
+  },
+  {
+    key: "integrations",
+    label: "Integrations",
+    description: "VCS connections: app installs/uninstalls, broken or expired tokens.",
+  },
+];
+
 export interface UsageState {
   used: number;
   limit: number | null;
@@ -299,12 +336,54 @@ export interface Invitation {
   expiresAt: string;
 }
 
-export type SsoProvider = "saml" | "oidc";
+// Backed by Better Auth's SSO plugin (`@better-auth/sso`). The admin form
+// collects a small subset and the API maps it to the plugin's native shape; the
+// GET response is the plugin's redacted provider view plus a derived protocol.
+export type SsoProtocol = "saml" | "oidc";
 
-export interface SsoConfig {
+export interface SsoProviderDetail {
+  providerId: string;
+  issuer: string;
   domain: string;
-  providerId: SsoProvider;
-  config: Record<string, unknown>;
+  organizationId: string | null;
+  protocol: SsoProtocol | null;
+  oidcConfig?: {
+    discoveryEndpoint: string;
+    clientIdLastFour: string;
+    pkce: boolean;
+    scopes?: string[];
+    authorizationEndpoint?: string;
+    tokenEndpoint?: string;
+    userInfoEndpoint?: string;
+    jwksEndpoint?: string;
+  } | null;
+  samlConfig?: {
+    entryPoint: string;
+    callbackUrl: string;
+    audience?: string;
+    wantAssertionsSigned?: boolean;
+    authnRequestsSigned?: boolean;
+    signatureAlgorithm?: string;
+    digestAlgorithm?: string;
+    certificate?:
+      | {
+          fingerprintSha256: string;
+          notBefore: string;
+          notAfter: string;
+          publicKeyAlgorithm: string;
+        }
+      | { error: string }
+      | null;
+  } | null;
+  spMetadataUrl?: string;
+}
+
+// Shape of the form payload POSTed to /api/teams/:id/sso.
+export interface SsoFormPayload {
+  domain: string;
+  protocol: SsoProtocol;
+  saml?: { entryURL: string; entityId: string; certificate?: string };
+  oidc?: { clientId: string; issuerUrl: string; clientSecret?: string; scopes?: string };
 }
 
 export interface AuditEntry {
@@ -373,4 +452,12 @@ export interface AdminTeam {
   reviews: number;
   tokenSpendUsd: number;
   credits: number;
+}
+
+export interface PasskeyRow {
+  id: string;
+  name: string | null;
+  deviceType: string;
+  backedUp: boolean;
+  createdAt: string;
 }

@@ -197,8 +197,8 @@ function onRepoSelect(event: Event) {
       <span>
         <span class="font-medium">Poll for new pull requests</span>
         <span class="block text-xs text-neutral-500">
-          Periodically check for open PRs and review new ones automatically — no inbound webhook
-          required. Uses this team's {PROVIDER_LABEL[provider] ?? provider} connection.
+          Periodically check for open PRs and review new ones automatically.
+          Uses this team's {PROVIDER_LABEL[provider] ?? provider} connection.
         </span>
       </span>
     </label>

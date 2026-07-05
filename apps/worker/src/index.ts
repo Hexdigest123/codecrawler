@@ -1,6 +1,6 @@
 import type { ReviewInput, ReviewResult } from "@codecrawler/agents";
 import { runReview } from "@codecrawler/agents";
-import { syncSubscription } from "@codecrawler/billing";
+import { MOLLIE_PLANS, recoverSubscription } from "@codecrawler/billing";
 import { db, schema } from "@codecrawler/db";
 import { enqueueEmail } from "@codecrawler/email";
 import { QUEUE_NAMES } from "@codecrawler/queue";
@@ -11,9 +11,9 @@ import {
   periodKey,
   recordUsage,
 } from "@codecrawler/quotas";
-import { env } from "@codecrawler/shared";
+import { env, type PlanId, planRank } from "@codecrawler/shared";
 import { Queue, Worker } from "bullmq";
-import { and, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, lte, or } from "drizzle-orm";
 import IORedis from "ioredis";
 
 type ReviewJobData = ReviewInput & { triggerEmail?: string };
@@ -22,6 +22,9 @@ type PaymentsJobData = { orgId: string };
 const RECONCILE_JOB = "payments:reconcile";
 const PAYMENTS_SYNC_JOB = "payments:sync";
 const RECONCILE_CRON = env.NODE_ENV === "development" ? "0 * * * *" : "0 3 * * *";
+const RENEWAL_WARNING_JOB = "payments:renewal-warning";
+const RENEWAL_WARNING_CRON = env.NODE_ENV === "development" ? "30 * * * *" : "30 9 * * *";
+const RENEWAL_WARNING_DAYS = 7;
 const POLL_JOB = "poll:pull-requests";
 const POLL_CRON = env.PR_POLL_CRON;
 
@@ -206,16 +209,83 @@ const paymentsWorker = new Worker(
     try {
       const [prior] = await db
         .select({
+          plan: schema.teamSubscriptions.plan,
+          status: schema.teamSubscriptions.status,
           currentPeriodEnd: schema.teamSubscriptions.currentPeriodEnd,
         })
         .from(schema.teamSubscriptions)
         .where(eq(schema.teamSubscriptions.orgId, orgId))
         .limit(1);
+      const priorPlan = (prior?.plan ?? "free") as PlanId;
+      const priorStatus = prior?.status ?? null;
       const priorEnd = prior?.currentPeriodEnd ?? null;
 
-      const result = await syncSubscription(orgId);
+      // recoverSubscription (not syncSubscription) so orgs whose first
+      // webhook was missed (mollieSubscriptionId still null) get relinked
+      // and their plan synced from Mollie. This is the backstop that
+      // guarantees plan-change emails reach the customer even when the
+      // Mollie webhook never reached the API.
+      const result = await recoverSubscription(orgId);
+      const newPlan = result.plan;
+      const newStatus = result.status;
 
-      if (priorEnd && result.status === "active") {
+      // Plan / lifecycle transition emails (covers missed webhooks). The
+      // priorPlan-vs-newPlan comparison naturally dedupes: once any path
+      // updates the DB plan, later syncs see no change and stay quiet.
+      if (newPlan !== priorPlan) {
+        const ownerEmails = await getOrgOwnerEmails(orgId);
+        const planInfo = newPlan !== "free" ? MOLLIE_PLANS[newPlan] : null;
+        const amount = planInfo ? `${planInfo.amountEur.toFixed(2)} EUR` : "";
+        for (const email of ownerEmails) {
+          if (newPlan === "free") {
+            await enqueueEmail("plan-downgraded", email, {
+              fromPlan: priorPlan,
+              toPlan: "free",
+            }).catch((err: unknown) => {
+              console.warn(`[worker] plan-downgraded email failed for ${orgId}`, err);
+            });
+          } else if (priorPlan === "free") {
+            await enqueueEmail("subscription-started", email, {
+              plan: newPlan,
+              planName: newPlan,
+              amount,
+            }).catch((err: unknown) => {
+              console.warn(`[worker] subscription-started email failed for ${orgId}`, err);
+            });
+          } else if (planRank(newPlan) > planRank(priorPlan)) {
+            await enqueueEmail("plan-upgraded", email, {
+              fromPlan: priorPlan,
+              toPlan: newPlan,
+            }).catch((err: unknown) => {
+              console.warn(`[worker] plan-upgraded email failed for ${orgId}`, err);
+            });
+          } else if (planRank(newPlan) < planRank(priorPlan)) {
+            await enqueueEmail("plan-downgraded", email, {
+              fromPlan: priorPlan,
+              toPlan: newPlan,
+            }).catch((err: unknown) => {
+              console.warn(`[worker] plan-downgraded email failed for ${orgId}`, err);
+            });
+          }
+        }
+      }
+
+      // Payment-failed notifications for first-payment failures that the
+      // webhook guard used to drop (priorStatus === null). Emit on any
+      // transition into a failure status.
+      if (
+        newStatus !== priorStatus &&
+        (newStatus === "failed" || newStatus === "canceled" || newStatus === "expired")
+      ) {
+        const ownerEmails = await getOrgOwnerEmails(orgId);
+        for (const email of ownerEmails) {
+          await enqueueEmail("payment-failed", email, {}).catch((err: unknown) => {
+            console.warn(`[worker] payment-failed email failed for ${orgId}`, err);
+          });
+        }
+      }
+
+      if (priorEnd && newStatus === "active") {
         const [after] = await db
           .select({ currentPeriodEnd: schema.teamSubscriptions.currentPeriodEnd })
           .from(schema.teamSubscriptions)
@@ -228,8 +298,8 @@ const paymentsWorker = new Worker(
             const isoEnd = newEnd.toISOString();
             for (const email of ownerEmails) {
               await enqueueEmail("subscription-renewed", email, {
-                plan: result.plan,
-                planName: result.plan,
+                plan: newPlan,
+                planName: newPlan,
                 newPeriodEnd: isoEnd,
                 date: isoEnd,
               }).catch((err: unknown) => {
@@ -263,8 +333,11 @@ async function runReconcile() {
       .from(schema.teamSubscriptions)
       .where(
         and(
-          isNotNull(schema.teamSubscriptions.mollieSubscriptionId),
-          inArray(schema.teamSubscriptions.status, ["active", "pending"]),
+          isNotNull(schema.teamSubscriptions.mollieCustomerId),
+          or(
+            isNotNull(schema.teamSubscriptions.mollieSubscriptionId),
+            inArray(schema.teamSubscriptions.status, ["active", "pending"]),
+          ),
         ),
       );
     for (const row of rows) {
@@ -277,6 +350,77 @@ async function runReconcile() {
     console.log(`[worker] payments:reconcile enqueued ${rows.length} payments job(s)`);
   } catch (err) {
     console.error("[worker] payments:reconcile tick failed", err);
+    throw err;
+  }
+}
+
+/**
+ * Daily heads-up: for every active subscription whose next renewal falls
+ * within RENEWAL_WARNING_DAYS, email the owners a "renewing soon" notice.
+ * Deduped per (org, period-end) via the audit log so each renewal is
+ * announced at most once.
+ */
+async function runRenewalWarning() {
+  try {
+    const cutoff = new Date(Date.now() + RENEWAL_WARNING_DAYS * 24 * 60 * 60 * 1000);
+    const rows = await db
+      .select({
+        orgId: schema.teamSubscriptions.orgId,
+        plan: schema.teamSubscriptions.plan,
+        currentPeriodEnd: schema.teamSubscriptions.currentPeriodEnd,
+      })
+      .from(schema.teamSubscriptions)
+      .where(
+        and(
+          eq(schema.teamSubscriptions.status, "active"),
+          isNotNull(schema.teamSubscriptions.currentPeriodEnd),
+          lte(schema.teamSubscriptions.currentPeriodEnd, cutoff),
+        ),
+      );
+    let notified = 0;
+    for (const row of rows) {
+      const periodEnd = row.currentPeriodEnd;
+      if (!periodEnd || periodEnd.getTime() <= Date.now()) {
+        continue;
+      }
+      const periodKey = periodEnd.toISOString().slice(0, 10);
+      const action = `billing.email:renewal-warning:${periodKey}`;
+      const [existing] = await db
+        .select({ id: schema.auditLog.id })
+        .from(schema.auditLog)
+        .where(and(eq(schema.auditLog.orgId, row.orgId), eq(schema.auditLog.action, action)))
+        .limit(1);
+      if (existing) {
+        continue;
+      }
+      try {
+        const ownerEmails = await getOrgOwnerEmails(row.orgId);
+        const planInfo =
+          row.plan !== "free" ? MOLLIE_PLANS[row.plan as Exclude<PlanId, "free">] : null;
+        const amount = planInfo ? `${planInfo.amountEur.toFixed(2)} EUR` : "";
+        for (const email of ownerEmails) {
+          await enqueueEmail("subscription-renewing", email, {
+            plan: row.plan,
+            planName: row.plan,
+            amount,
+            renewalDate: periodEnd.toISOString(),
+            date: periodEnd.toISOString(),
+          }).catch((err: unknown) => {
+            console.warn(`[worker] subscription-renewing email failed for ${row.orgId}`, err);
+          });
+        }
+        await db
+          .insert(schema.auditLog)
+          .values({ orgId: row.orgId, action, metadata: { periodEnd: periodEnd.toISOString() } })
+          .onConflictDoNothing();
+        notified++;
+      } catch (err) {
+        console.warn(`[worker] renewal-warning dispatch failed for ${row.orgId}`, err);
+      }
+    }
+    console.log(`[worker] payments:renewal-warning notified ${notified} org(s)`);
+  } catch (err) {
+    console.error("[worker] payments:renewal-warning tick failed", err);
     throw err;
   }
 }
@@ -327,6 +471,8 @@ const scheduledWorker = new Worker(
   async (job) => {
     if (job.name === RECONCILE_JOB) {
       await runReconcile();
+    } else if (job.name === RENEWAL_WARNING_JOB) {
+      await runRenewalWarning();
     } else if (job.name === POLL_JOB) {
       await runPollTick();
     }
@@ -341,7 +487,7 @@ scheduledWorker.on("failed", (job, err) => {
 async function registerScheduledJobs() {
   const existing = await scheduledQueue.getRepeatableJobs();
   for (const r of existing) {
-    if (r.name === RECONCILE_JOB || r.name === POLL_JOB) {
+    if (r.name === RECONCILE_JOB || r.name === RENEWAL_WARNING_JOB || r.name === POLL_JOB) {
       await scheduledQueue.removeRepeatableByKey(r.key);
     }
   }
@@ -353,6 +499,13 @@ async function registerScheduledJobs() {
     },
   );
   await scheduledQueue.add(
+    RENEWAL_WARNING_JOB,
+    {},
+    {
+      repeat: { pattern: RENEWAL_WARNING_CRON, tz: "UTC" },
+    },
+  );
+  await scheduledQueue.add(
     POLL_JOB,
     {},
     {
@@ -360,7 +513,7 @@ async function registerScheduledJobs() {
     },
   );
   console.log(
-    `[worker] scheduled jobs registered (reconcile=${RECONCILE_CRON}, poll=${POLL_CRON})`,
+    `[worker] scheduled jobs registered (reconcile=${RECONCILE_CRON}, renewal-warning=${RENEWAL_WARNING_CRON}, poll=${POLL_CRON})`,
   );
 }
 

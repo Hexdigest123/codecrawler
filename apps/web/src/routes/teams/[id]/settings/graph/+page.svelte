@@ -66,8 +66,8 @@
       {/if}
     </div>
     <p class="mt-1 text-xs text-neutral-500">
-      The tier used when a review is triggered without an explicit depth (e.g. a PR-opened
-      webhook). Comment <code class="rounded bg-neutral-100 px-1 dark:bg-neutral-800">/codecrawler deep</code>
+      The tier used when a review is triggered without an explicit depth (e.g. a polled
+      PR). Comment <code class="rounded bg-neutral-100 px-1 dark:bg-neutral-800">/codecrawler deep</code>
       on a PR to override per-review. The global <code class="rounded bg-neutral-100 px-1 dark:bg-neutral-800">REVIEW_AGENT_MODE</code>
       setting can force the static path regardless.
     </p>

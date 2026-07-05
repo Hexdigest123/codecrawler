@@ -2,56 +2,64 @@
   import { invalidateAll } from "$app/navigation";
   import { ApiError, api } from "$lib/api";
   import { toastError, toastSuccess } from "$lib/toast.svelte";
-  import { PLAN_LABEL, type SsoConfig, type SsoProvider } from "$lib/types";
+  import {
+    PLAN_LABEL,
+    type SsoFormPayload,
+    type SsoProtocol,
+    type SsoProviderDetail,
+  } from "$lib/types";
   import type { PageProps } from "./$types";
 
   let { data }: PageProps = $props();
 
-  const existing = $derived<SsoConfig | null>(data.sso ?? null);
-  const existingConfig = $derived<Record<string, unknown>>(
-    existing?.config ?? {},
-  );
+  const existing = $derived<SsoProviderDetail | null>(data.sso ?? null);
   const isPro = $derived(data.team?.plan === "pro");
   const isAdmin = $derived(
     data.team?.role === "owner" || data.team?.role === "admin",
   );
 
-  let providerId = $state<SsoProvider>("saml");
+  // Form state — protocol toggles which sub-form is shown.
+  let protocol = $state<SsoProtocol>("saml");
   let domain = $state("");
+  // SAML
   let entryURL = $state("");
   let entityId = $state("");
   let certificate = $state("");
-  let signInURL = $state("");
+  // OIDC
   let clientId = $state("");
-  let clientSecret = $state("");
   let issuerUrl = $state("");
+  let clientSecret = $state("");
   let scopes = $state("");
 
   let saving = $state(false);
   let deleting = $state(false);
 
-  const samlCertConfigured = $derived(Boolean(existingConfig.certificate));
-  const oidcSecretConfigured = $derived(Boolean(existingConfig.clientSecret));
+  // Whether secrets are already stored for the existing provider (we can't show
+  // them back — they're redacted server-side — so we just signal "configured").
+  const samlCertConfigured = $derived(
+    Boolean(existing?.samlConfig?.certificate) && existing?.protocol === "saml",
+  );
+  const oidcSecretConfigured = $derived(
+    Boolean(existing?.oidcConfig) && existing?.protocol === "oidc",
+  );
 
   $effect.pre(() => {
-    providerId = existing?.providerId ?? "saml";
+    protocol = existing?.protocol ?? "saml";
     domain = existing?.domain ?? "";
-    entryURL = stringField(existingConfig.entryURL);
-    entityId = stringField(existingConfig.entityId);
-    signInURL = stringField(existingConfig.signInURL);
-    clientId = stringField(existingConfig.clientId);
-    issuerUrl = stringField(existingConfig.issuerUrl);
-    scopes = stringField(existingConfig.scopes);
+    entryURL = existing?.samlConfig?.entryPoint ?? "";
+    entityId = existing?.issuer ?? "";
+    clientId = existing?.oidcConfig
+      ? `•••••${existing.oidcConfig.clientIdLastFour ?? ""}`
+      : "";
+    issuerUrl = existing?.protocol === "oidc" ? (existing?.issuer ?? "") : "";
+    scopes = existing?.oidcConfig?.scopes?.join(" ") ?? "";
+    // Clear the secret/cert inputs — they're never re-displayed.
     certificate = "";
     clientSecret = "";
   });
 
-  function stringField(value: unknown): string {
-    return typeof value === "string" ? value : "";
-  }
-
-  function providerLabel(p: SsoProvider): string {
-    return p === "saml" ? "SAML 2.0" : "OIDC";
+  function protocolLabel(p: SsoProtocol | null): string {
+    return p === "oidc" ? "OIDC" : p === "saml" ? "SAML 2.0" : "—";
   }
 
   const samlRequiredMet = $derived(
@@ -68,27 +76,35 @@
 
   const canSave = $derived(
     domain.trim().length > 0 &&
-    (providerId === "saml" ? samlRequiredMet : oidcRequiredMet) &&
+    (protocol === "saml" ? samlRequiredMet : oidcRequiredMet) &&
     !saving,
   );
 
-  function buildConfig(): Record<string, unknown> {
-    if (providerId === "saml") {
-      const cfg: Record<string, unknown> = {
-        entryURL: entryURL.trim(),
-        entityId: entityId.trim(),
+  function buildPayload(): SsoFormPayload {
+    if (protocol === "saml") {
+      return {
+        domain: domain.trim().toLowerCase(),
+        protocol: "saml",
+        saml: {
+          entryURL: entryURL.trim(),
+          entityId: entityId.trim(),
+          // When updating and the field was left blank, the API will reject —
+          // so we only forward it when populated. The API enforces presence on
+          // fresh registrations and accepts re-registration on updates.
+          ...(certificate.trim().length > 0 ? { certificate: certificate.trim() } : {}),
+        },
       };
-      if (signInURL.trim().length > 0) cfg.signInURL = signInURL.trim();
-      if (certificate.trim().length > 0) cfg.certificate = certificate.trim();
-      return cfg;
     }
-    const cfg: Record<string, unknown> = {
-      clientId: clientId.trim(),
-      issuerUrl: issuerUrl.trim(),
+    return {
+      domain: domain.trim().toLowerCase(),
+      protocol: "oidc",
+      oidc: {
+        clientId: clientId.trim(),
+        issuerUrl: issuerUrl.trim().replace(/\/+$/, ""),
+        ...(clientSecret.length > 0 ? { clientSecret } : {}),
+        ...(scopes.trim().length > 0 ? { scopes: scopes.trim() } : {}),
+      },
     };
-    if (scopes.trim().length > 0) cfg.scopes = scopes.trim();
-    if (clientSecret.length > 0) cfg.clientSecret = clientSecret;
-    return cfg;
   }
 
   async function save(event: SubmitEvent) {
@@ -98,11 +114,7 @@
     try {
       await api<{ ok: boolean }>(`/api/teams/${data.teamId}/sso`, {
         method: "POST",
-        body: JSON.stringify({
-          domain: domain.trim(),
-          providerId,
-          config: buildConfig(),
-        }),
+        body: JSON.stringify(buildPayload()),
       });
       toastSuccess("SSO configuration saved.");
       await invalidateAll();
@@ -165,8 +177,9 @@
         <div>
           <h2 class="text-lg font-semibold">Custom SSO is a Pro feature</h2>
           <p class="mt-1 max-w-xl text-sm text-neutral-600 dark:text-neutral-400">
-            SAML 2.0 and OIDC single sign-on keep your team on your identity provider
-            (Okta, Entra, Google Workspace and more). Upgrade to Pro to configure it.
+            SAML 2.0 and OIDC single sign-on keep your team on your identity
+            provider (Authentik, Okta, Entra ID, Google Workspace, Keycloak and
+            more). Upgrade to Pro to configure it.
           </p>
         </div>
         <a
@@ -200,7 +213,7 @@
         <dl class="mt-4 grid gap-4 sm:grid-cols-3">
           <div>
             <dt class="text-xs uppercase tracking-wide text-neutral-400">Provider</dt>
-            <dd class="mt-1 text-lg font-semibold">{providerLabel(existing.providerId)}</dd>
+            <dd class="mt-1 text-lg font-semibold">{protocolLabel(existing.protocol)}</dd>
           </div>
           <div>
             <dt class="text-xs uppercase tracking-wide text-neutral-400">Domain</dt>
@@ -209,7 +222,7 @@
           <div>
             <dt class="text-xs uppercase tracking-wide text-neutral-400">Secrets</dt>
             <dd class="mt-1 text-sm font-medium text-neutral-600 dark:text-neutral-300">
-              {#if existing.providerId === "saml"}
+              {#if existing.protocol === "saml"}
                 Certificate {samlCertConfigured ? "configured" : "not set"}
               {:else}
                 Client secret {oidcSecretConfigured ? "configured" : "not set"}
@@ -243,7 +256,7 @@
         <label class="flex flex-col gap-1 text-sm">
           <span class="font-medium">Provider</span>
           <select
-            bind:value={providerId}
+            bind:value={protocol}
             class="input px-3 py-2"
           >
             <option value="saml">SAML 2.0</option>
@@ -265,14 +278,14 @@
         </label>
       </div>
 
-      {#if providerId === "saml"}
+      {#if protocol === "saml"}
         <div class="mt-5 grid gap-4">
           <label class="flex flex-col gap-1 text-sm">
             <span class="font-medium">IdP SSO URL</span>
             <input
               type="url"
               bind:value={entryURL}
-              placeholder="https://idp.example.com/app/sso/saml"
+              placeholder="https://authentik.example/application/saml/codecrawler/sso/binding/redirect/"
               class="input px-3 py-2"
             />
           </label>
@@ -281,7 +294,7 @@
             <input
               type="text"
               bind:value={entityId}
-              placeholder="https://idp.example.com/entity"
+              placeholder="https://codecrawler.example/sp"
               class="input px-3 py-2"
             />
           </label>
@@ -291,22 +304,13 @@
               bind:value={certificate}
               rows="5"
               placeholder={samlCertConfigured
-                ? "Configured — leave blank to keep the current certificate."
+                ? "Configured — re-paste only to replace the current certificate."
                 : "-----BEGIN CERTIFICATE-----"}
               class="input px-3 py-2 font-mono text-xs"
             ></textarea>
             <span class="text-xs text-neutral-500">
-              The IdP's signing certificate (PEM). Never shown after saving.
+              The IdP's signing certificate (PEM). Required on first save; never shown after.
             </span>
-          </label>
-          <label class="flex flex-col gap-1 text-sm">
-            <span class="font-medium">Sign-in URL <span class="font-normal text-neutral-400">(optional)</span></span>
-            <input
-              type="url"
-              bind:value={signInURL}
-              placeholder="https://idp.example.com/login"
-              class="input px-3 py-2"
-            />
           </label>
         </div>
       {:else}
@@ -316,7 +320,7 @@
             <input
               type="text"
               bind:value={clientId}
-              placeholder="your-client-id"
+              placeholder={oidcSecretConfigured ? "•••••" : "your-client-id"}
               class="input px-3 py-2"
             />
           </label>
@@ -327,22 +331,22 @@
               autocomplete="off"
               bind:value={clientSecret}
               placeholder={oidcSecretConfigured
-                ? "Configured — leave blank to keep the current secret."
+                ? "Configured — re-paste only to replace the current secret."
                 : "your-client-secret"}
               class="input px-3 py-2"
             />
-            <span class="text-xs text-neutral-500">Never shown after saving.</span>
+            <span class="text-xs text-neutral-500">Required on first save; never shown after.</span>
           </label>
           <label class="flex flex-col gap-1 text-sm sm:col-span-2">
-            <span class="font-medium">Issuer URL (well-known)</span>
+            <span class="font-medium">Issuer URL</span>
             <input
               type="url"
               bind:value={issuerUrl}
-              placeholder="https://idp.example.com"
+              placeholder="https://authentik.example/application/o/codecrawler/"
               class="input px-3 py-2"
             />
             <span class="text-xs text-neutral-500">
-              Discovery is read from <code>{"{issuer}/.well-known/openid-configuration"}</code>.
+              OIDC discovery is read from <code>{"{issuer}/.well-known/openid-configuration"}</code>.
             </span>
           </label>
           <label class="flex flex-col gap-1 text-sm sm:col-span-2">
@@ -358,7 +362,8 @@
       {/if}
 
       <p class="mt-5 rounded-lg bg-neutral-100 px-3 py-2 text-xs text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-        SSO is validated structurally; a live IdP login is tested separately.
+        Saving validates against the IdP (OIDC discovery is fetched; the SAML
+        certificate is parsed). The first sign-in confirms the live handshake.
       </p>
 
       <div class="mt-5 flex items-center gap-4">
