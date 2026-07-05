@@ -1,41 +1,52 @@
 <script lang="ts">
+  import { authClient } from "@codecrawler/auth/client";
   import { ApiError, api } from "$lib/api";
   import { toastError } from "$lib/toast.svelte";
-  import type { SsoProvider } from "$lib/types";
   import { goto } from "$app/navigation";
 
   interface ResolveResult {
-    providerId: SsoProvider;
-    organizationId: string;
+    providerId: string;
+    organizationId: string | null;
   }
 
   let email = $state("");
   let loading = $state(false);
-  let result = $state<ResolveResult | null>(null);
+  let redirecting = $state(false);
   let notFound = $state(false);
 
   const disabled = $derived(loading || email.trim().length === 0);
 
-  function providerLabel(p: SsoProvider): string {
-    return p === "saml" ? "SAML 2.0" : "OIDC";
-  }
-
   async function submit(event: SubmitEvent) {
     event.preventDefault();
     if (disabled) return;
-    result = null;
     notFound = false;
     loading = true;
     try {
+      // Confirm a provider is registered for this domain before kicking off
+      // the handshake, so we can show a clear "no SSO" message instead of a
+      // raw 4xx from the IdP redirect.
       const resolved = await api<ResolveResult | null>("/api/sso/resolve", {
         method: "POST",
         body: JSON.stringify({ email: email.trim() }),
       });
-      if (resolved) {
-        result = resolved;
-      } else {
+      if (!resolved) {
         notFound = true;
+        return;
       }
+      redirecting = true;
+      // Better Auth's SSO plugin handles the IdP redirect + callback. After a
+      // successful SSO login the browser lands on /dashboard (callbackURL).
+      const { error: err } = await authClient.signIn.sso({
+        providerId: resolved.providerId,
+        callbackURL: "/dashboard",
+        errorCallbackURL: "/sso?error=1",
+        newUserCallbackURL: "/dashboard",
+      });
+      if (err) {
+        redirecting = false;
+        toastError(err.message ?? "Could not start SSO sign-in.");
+      }
+      // On success the browser is redirected by the plugin — no goto() needed.
     } catch (err) {
       toastError(err instanceof ApiError ? err.message : "Could not resolve SSO.");
     } finally {
@@ -44,8 +55,8 @@
   }
 
   function reset() {
-    result = null;
     notFound = false;
+    email = "";
   }
 </script>
 
@@ -59,37 +70,18 @@
     Enter your work email and we'll route you to your team's identity provider.
   </p>
 
-  {#if result}
+  {#if redirecting}
     <div
       class="mt-6 rounded-xl border border-brand-300 bg-brand-50 p-5 dark:border-brand-800 dark:bg-brand-950"
       role="status"
     >
       <h2 class="text-base font-semibold text-brand-800 dark:text-brand-200">
-        Redirecting to your team's SSO ({providerLabel(result.providerId)})…
+        Redirecting to your identity provider…
       </h2>
       <p class="mt-2 text-sm text-brand-700 dark:text-brand-300">
-        Organization <span class="font-mono">{result.organizationId}</span> is
-        configured for {providerLabel(result.providerId)} single sign-on.
+        If you are not redirected automatically, follow the link shown by your
+        identity provider.
       </p>
-      <p class="mt-3 text-xs text-brand-600 dark:text-brand-400">
-        SSO is validated structurally; a live IdP login is tested separately.
-      </p>
-      <div class="mt-4 flex gap-3">
-        <button
-          type="button"
-          onclick={() => goto("/sign-in")}
-          class="rounded-md bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-500"
-        >
-          Back to sign in
-        </button>
-        <button
-          type="button"
-          onclick={reset}
-          class="rounded-md border border-brand-300 px-3 py-1.5 text-sm font-medium text-brand-700 hover:bg-brand-100 dark:border-brand-800 dark:text-brand-300 dark:hover:bg-brand-900"
-        >
-          Use a different email
-        </button>
-      </div>
     </div>
   {:else}
     <form class="mt-6 flex flex-col gap-4" onsubmit={submit} novalidate>

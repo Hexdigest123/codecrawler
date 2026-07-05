@@ -259,7 +259,7 @@
     </h2>
     {#if recentReviews.length === 0}
       <p class="mt-4 text-sm text-neutral-500">
-        No reviews yet for this project. Trigger one from the list above or via a {providerLabel} webhook.
+        No reviews yet for this project. Trigger one from the list above or by opening a pull request.
       </p>
     {:else}
       <ul class="mt-4 divide-y divide-neutral-200 dark:divide-neutral-800">

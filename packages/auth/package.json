@@ -12,6 +12,8 @@
     "dev": "bun --watch src/index.ts"
   },
   "dependencies": {
+    "@better-auth/passkey": "1.6.23",
+    "@better-auth/sso": "^1.6.23",
     "@codecrawler/db": "workspace:*",
     "@codecrawler/email": "workspace:*",
     "@codecrawler/shared": "workspace:*",

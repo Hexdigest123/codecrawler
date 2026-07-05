@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { connect as netConnect, type Socket } from "node:net";
 import { connect as tlsConnect } from "node:tls";
 import type { NodeModels, ReviewInput } from "@codecrawler/agents";
@@ -14,7 +14,11 @@ import {
   syncPayment,
 } from "@codecrawler/billing";
 import { client, db, schema } from "@codecrawler/db";
-import { enqueueEmail } from "@codecrawler/email";
+import {
+  enqueueEmail,
+  getNotificationSettings,
+  upsertNotificationSettings,
+} from "@codecrawler/email";
 import { makeQueue, QUEUE_NAMES } from "@codecrawler/queue";
 import { checkQuota, getTeamPlan, getUsage, projectReviewCost } from "@codecrawler/quotas";
 import {
@@ -30,12 +34,7 @@ import {
   resolveDepthFromMode,
 } from "@codecrawler/shared";
 import type { VcsAuth } from "@codecrawler/vcs";
-import {
-  getVcsProvider,
-  verifyGiteaWebhook,
-  verifyGitHubWebhook,
-  verifyGitlabWebhook,
-} from "@codecrawler/vcs";
+import { getVcsProvider } from "@codecrawler/vcs";
 import { zValidator } from "@hono/zod-validator";
 import { and, count, desc, eq, inArray, isNull, ne, sql, sum } from "drizzle-orm";
 import type { Context } from "hono";
@@ -240,6 +239,55 @@ async function getOrgOwnerEmails(orgId: string): Promise<string[]> {
   return rows.map((r) => r.email).filter((e): e is string => Boolean(e));
 }
 
+async function emitPlanChangeEmails(
+  orgId: string,
+  priorPlan: PlanId,
+  newPlan: PlanId,
+): Promise<void> {
+  if (priorPlan === newPlan) {
+    return;
+  }
+  try {
+    const ownerEmails = await getOrgOwnerEmails(orgId);
+    if (ownerEmails.length === 0) {
+      return;
+    }
+    const teamName = await getTeamName(orgId);
+    const planInfo = newPlan !== "free" ? MOLLIE_PLANS[newPlan] : null;
+    const amount = planInfo ? `${planInfo.amountEur.toFixed(2)} EUR` : "";
+    for (const email of ownerEmails) {
+      if (newPlan === "free") {
+        await enqueueEmail("plan-downgraded", email, {
+          fromPlan: priorPlan,
+          toPlan: "free",
+          teamName,
+        });
+      } else if (priorPlan === "free") {
+        await enqueueEmail("subscription-started", email, {
+          plan: newPlan,
+          planName: newPlan,
+          amount,
+          teamName,
+        });
+      } else if (planRank(newPlan) > planRank(priorPlan)) {
+        await enqueueEmail("plan-upgraded", email, {
+          fromPlan: priorPlan,
+          toPlan: newPlan,
+          teamName,
+        });
+      } else {
+        await enqueueEmail("plan-downgraded", email, {
+          fromPlan: priorPlan,
+          toPlan: newPlan,
+          teamName,
+        });
+      }
+    }
+  } catch (err) {
+    console.warn("[api] plan change email dispatch failed", err);
+  }
+}
+
 async function countUserMemberships(userId: string): Promise<number> {
   const rows = await db
     .select({ id: schema.member.id })
@@ -284,7 +332,6 @@ function slugify(input: string): string {
 function isPublicApiPath(path: string): boolean {
   if (path === "/api/health" || path === "/api/healthz") return true;
   if (path === "/api/auth" || path.startsWith("/api/auth/")) return true;
-  if (path === "/api/webhooks" || path.startsWith("/api/webhooks/")) return true;
   if (path === "/api/payments" || path.startsWith("/api/payments/")) return true;
   if (path === "/api/sso/resolve") return true;
   if (path === "/api/signup-config") return true;
@@ -332,7 +379,6 @@ function classifyRoute(method: string, path: string): RouteClass {
     if (method === "GET") return "api";
     return "auth";
   }
-  if (path === "/api/webhooks" || path.startsWith("/api/webhooks/")) return "webhook";
   if (path === "/api/payments/webhook") return "webhook";
   if (path === "/api/internal" || path.startsWith("/api/internal/")) return "webhook";
   return "api";
@@ -398,10 +444,6 @@ export function checkWebhookDuplicate(
   }
   webhookEventStore.set(key, now + WEBHOOK_DEDUP_TTL_MS);
   return false;
-}
-
-export function webhookDedupKey(provider: string, eventId: string): string {
-  return `${provider}:${eventId}`;
 }
 
 setInterval(() => {
@@ -519,7 +561,6 @@ const createProjectSchema = z.object({
   name: z.string().min(1),
   provider: z.enum(["github", "gitlab", "gitea"]),
   repoFullName: z.string().min(1),
-  webhookSecret: z.string().optional(),
   pollingEnabled: z.boolean().optional(),
 });
 
@@ -565,21 +606,29 @@ const updateMemberRoleSchema = z.object({
   role: z.enum(["member", "admin", "owner"]),
 });
 
-const samlConfigSchema = z.object({
+// SSO provider config — payload is mapped to Better Auth's
+// `registerSSOProvider`/`updateSSOProvider` shapes in the route handler. The
+// `protocol` discriminator selects which sub-config is required. `providerId`
+// is a stable per-org slug (`org-${orgId}`) so callback URLs stay stable across
+// reconfiguration.
+const samlFormSchema = z.object({
   entryURL: z.string().url(),
-  certificate: z.string().min(1),
   entityId: z.string().min(1),
+  certificate: z.string().optional(),
 });
 
-const oidcConfigSchema = z.object({
+const oidcFormSchema = z.object({
   clientId: z.string().min(1),
   issuerUrl: z.string().url(),
+  clientSecret: z.string().optional(),
+  scopes: z.string().optional(),
 });
 
 const upsertSsoSchema = z.object({
   domain: z.string().min(1),
-  providerId: z.enum(["saml", "oidc"]),
-  config: z.record(z.string(), z.unknown()),
+  protocol: z.enum(["saml", "oidc"]),
+  saml: samlFormSchema.optional(),
+  oidc: oidcFormSchema.optional(),
 });
 
 const resolveSsoSchema = z.object({
@@ -597,6 +646,25 @@ const changePasswordSchema = z.object({
 
 const changeEmailSchema = z.object({
   newEmail: z.string().email(),
+});
+
+const notificationSettingsSchema = z.object({
+  reviews: z.boolean(),
+  teams: z.boolean(),
+  billing: z.boolean(),
+  integrations: z.boolean(),
+});
+
+const enable2faSchema = z.object({
+  password: z.string().min(1),
+});
+
+const verify2faSchema = z.object({
+  code: z.string().min(4).max(10),
+});
+
+const disable2faSchema = z.object({
+  password: z.string().min(1),
 });
 
 const BILLING_PLAN_CATALOG = [
@@ -678,7 +746,7 @@ function pickDepthTier(requested?: DepthTier | null, profileDefault?: DepthTier 
 
 /**
  * Resolve the run's final depth tier + which queue it belongs on. Deep reviews
- * require Plus/Pro; webhook/comment triggers can't return a 402, so an
+ * require Plus/Pro; comment triggers can't return a 402, so an
  * ineligible deep request silently downgrades to quick (the manual endpoint
  * gates explicitly before calling this). Deep runs land on a dedicated
  * `reviews:deep` queue so the long agent loops can't starve quick reviews.
@@ -697,36 +765,6 @@ async function resolveEnqueueDepth(
   }
   const queueName = depth === "deep" ? QUEUE_NAMES.reviewsDeep : QUEUE_NAMES.reviews;
   return { depth, queueName };
-}
-
-async function enqueueVcsReview(
-  provider: "gitlab" | "gitea",
-  repoFullName: string,
-  prNumber: number,
-  prMeta?: {
-    title?: string | null;
-    author?: string | null;
-    state?: string | null;
-  },
-): Promise<void> {
-  if (!repoFullName || !prNumber) return;
-  const [project] = await db
-    .select()
-    .from(schema.projects)
-    .where(eq(schema.projects.repoFullName, repoFullName))
-    .limit(1);
-  if (!project) return;
-  const profile = await resolveOrgProfile(project.orgId, "pr_review");
-  await upsertPullAndEnqueueReview({
-    orgId: project.orgId,
-    projectId: project.id,
-    prNumber,
-    repoFullName,
-    profile,
-    provider,
-    source: "webhook",
-    prMeta,
-  });
 }
 
 async function getStoredVcsConnection(
@@ -863,7 +901,7 @@ async function upsertPullAndEnqueueReview(opts: {
   triggerUserId?: string;
   triggerEmail?: string;
   provider?: "github" | "gitlab" | "gitea";
-  source?: "webhook" | "manual" | "synthetic" | "comment" | "poll";
+  source?: "manual" | "synthetic" | "comment" | "poll";
   depth?: DepthTier | null;
 }): Promise<string> {
   const provider = opts.provider ?? "github";
@@ -875,7 +913,7 @@ async function upsertPullAndEnqueueReview(opts: {
     | "by_filegroup"
     | "full";
 
-  const source: "webhook" | "manual" | "synthetic" | "comment" | "poll" =
+  const source: "manual" | "synthetic" | "comment" | "poll" =
     opts.source ?? (opts.syntheticPr ? "synthetic" : "manual");
 
   // Resolve the depth tier + target queue (deep → dedicated reviews:deep queue,
@@ -1000,8 +1038,8 @@ async function upsertPullAndEnqueueReview(opts: {
 // every 5 min). For each project with pollingEnabled=true that has a stored
 // VCS connection, we list open PRs and enqueue a review for any whose head
 // sha hasn't been reviewed yet (or has new commits since the last review).
-// This is an alternative to inbound webhooks — useful for self-hosted VCS
-// behind a firewall or when configuring webhooks isn't possible.
+// This is the primary discovery mechanism — useful for self-hosted VCS
+// behind a firewall or any environment without inbound connectivity.
 // ---------------------------------------------------------------------------
 
 /**
@@ -1150,213 +1188,6 @@ app.get("/api/healthz", (c) => c.json({ status: "ok" }));
 
 app.all("/api/auth/*", (c) => auth.handler(c.req.raw));
 
-app.post("/api/webhooks/github", async (c) => {
-  const rawBody = await c.req.text();
-  const secret = process.env.GH_WEBHOOK_SECRET ?? "";
-  if (!secret) {
-    console.warn("[api] webhook secret not configured");
-    return c.json({ status: "ignored", reason: "webhook secret not configured" });
-  }
-  const headers: Record<string, string> = {};
-  c.req.raw.headers.forEach((value, key) => {
-    headers[key] = value;
-  });
-  const event = await verifyGitHubWebhook(secret, headers, rawBody);
-  if (!event) {
-    return jsonError(c, 401, "unauthorized", "Invalid webhook signature");
-  }
-
-  const ghDelivery = c.req.header("x-github-delivery") ?? "";
-  if (ghDelivery && checkWebhookDuplicate("github", ghDelivery)) {
-    return c.json({ status: "duplicate" });
-  }
-
-  let payload: Record<string, unknown> = {};
-  try {
-    payload = JSON.parse(rawBody || "{}") as Record<string, unknown>;
-  } catch {
-    payload = {};
-  }
-  const ghEvent = c.req.header("x-github-event") ?? "";
-  const action = typeof payload.action === "string" ? payload.action : "";
-  const repository = (payload.repository as { full_name?: string } | undefined) ?? undefined;
-  const repoFullName = repository?.full_name ?? "";
-
-  const enqueueForRepo = async (
-    prNumber: number,
-    prMeta?: {
-      title?: string | null;
-      author?: string | null;
-      baseSha?: string | null;
-      headSha?: string | null;
-      state?: string | null;
-      htmlUrl?: string | null;
-    },
-    opts: { depth?: DepthTier; source?: "webhook" | "comment" } = {},
-  ) => {
-    if (!repoFullName || !prNumber) {
-      return;
-    }
-    const [project] = await db
-      .select()
-      .from(schema.projects)
-      .where(eq(schema.projects.repoFullName, repoFullName))
-      .limit(1);
-    if (!project) {
-      return;
-    }
-    const profile = await resolveOrgProfile(project.orgId, "pr_review");
-    await upsertPullAndEnqueueReview({
-      orgId: project.orgId,
-      projectId: project.id,
-      prNumber,
-      repoFullName,
-      profile,
-      provider: "github",
-      source: opts.source ?? "webhook",
-      depth: opts.depth,
-      prMeta,
-    });
-  };
-
-  if (ghEvent === "pull_request" && ["opened", "synchronize", "reopened"].includes(action)) {
-    const pr = payload.pull_request as
-      | {
-          number?: number;
-          title?: string;
-          html_url?: string;
-          user?: { login?: string };
-          base?: { sha?: string };
-          head?: { sha?: string };
-          state?: string;
-        }
-      | undefined;
-    const n = typeof payload.number === "number" ? payload.number : pr?.number;
-    if (typeof n === "number") {
-      await enqueueForRepo(n, {
-        title: pr?.title ?? null,
-        author: pr?.user?.login ?? null,
-        baseSha: pr?.base?.sha ?? null,
-        headSha: pr?.head?.sha ?? null,
-        state: pr?.state ?? null,
-        htmlUrl: pr?.html_url ?? null,
-      });
-    }
-  } else if (ghEvent === "issue_comment") {
-    const comment = payload.comment as { body?: string } | undefined;
-    const bodyText = typeof comment?.body === "string" ? comment.body.trim() : "";
-    if (bodyText.startsWith("/codecrawler")) {
-      const issue = payload.issue as { number?: number; pull_request?: unknown } | undefined;
-      const n = typeof issue?.number === "number" ? issue.number : undefined;
-      // `/codecrawler deep` opts the PR into the deep agent tier (Plus/Pro
-      // only, gated at enqueue). Plain `/codecrawler` runs the default tier.
-      const wantsDeep = /\bdeep\b/i.test(bodyText);
-      if (typeof n === "number" && issue?.pull_request) {
-        await enqueueForRepo(n, undefined, {
-          source: "comment",
-          depth: wantsDeep ? "deep" : undefined,
-        });
-      }
-    }
-  }
-
-  return c.json({ status: "ok" });
-});
-
-app.post("/api/webhooks/gitlab", async (c) => {
-  const rawBody = await c.req.text();
-  const secret = process.env.GITLAB_WEBHOOK_SECRET ?? "";
-  if (!secret) {
-    console.warn("[api] gitlab webhook secret not configured");
-    return c.json({ status: "ignored", reason: "webhook secret not configured" });
-  }
-  const headers: Record<string, string> = {};
-  c.req.raw.headers.forEach((value, key) => {
-    headers[key] = value;
-  });
-  const event = await verifyGitlabWebhook(secret, headers, rawBody);
-  if (!event) {
-    return jsonError(c, 401, "unauthorized", "Invalid webhook signature");
-  }
-
-  let payload: Record<string, unknown> = {};
-  try {
-    payload = JSON.parse(rawBody || "{}") as Record<string, unknown>;
-  } catch {
-    payload = {};
-  }
-  const objectKind = typeof payload.object_kind === "string" ? payload.object_kind : "";
-  const attrs =
-    (payload.object_attributes as { action?: string; iid?: number } | undefined) ?? undefined;
-  const action = attrs?.action ?? "";
-  const project = (payload.project as { path_with_namespace?: string } | undefined) ?? undefined;
-  const repoFullName = project?.path_with_namespace ?? "";
-
-  const glUuid = c.req.header("x-gitlab-webhook-uuid") ?? "";
-  const glEventId = glUuid || (objectKind ? `${objectKind}:${attrs?.iid ?? ""}` : "");
-  if (glEventId && checkWebhookDuplicate("gitlab", glEventId)) {
-    return c.json({ status: "duplicate" });
-  }
-
-  if (
-    objectKind === "merge_request" &&
-    ["open", "reopen", "update"].includes(action) &&
-    typeof attrs?.iid === "number"
-  ) {
-    await enqueueVcsReview("gitlab", repoFullName, attrs.iid);
-  }
-
-  return c.json({ status: "ok" });
-});
-
-app.post("/api/webhooks/gitea", async (c) => {
-  const rawBody = await c.req.text();
-  const secret = process.env.GITEA_WEBHOOK_SECRET ?? "";
-  if (!secret) {
-    console.warn("[api] gitea webhook secret not configured");
-    return c.json({ status: "ignored", reason: "webhook secret not configured" });
-  }
-  const headers: Record<string, string> = {};
-  c.req.raw.headers.forEach((value, key) => {
-    headers[key] = value;
-  });
-  const event = await verifyGiteaWebhook(secret, headers, rawBody);
-  if (!event) {
-    return jsonError(c, 401, "unauthorized", "Invalid webhook signature");
-  }
-
-  const giteaDelivery = c.req.header("x-gitea-delivery") ?? "";
-  const giteaSig = c.req.header("x-gitea-signature") ?? "";
-  const giteaEventId =
-    giteaDelivery || createHash("sha256").update(`${rawBody}:${giteaSig}`).digest("hex");
-  if (giteaEventId && checkWebhookDuplicate("gitea", giteaEventId)) {
-    return c.json({ status: "duplicate" });
-  }
-
-  let payload: Record<string, unknown> = {};
-  try {
-    payload = JSON.parse(rawBody || "{}") as Record<string, unknown>;
-  } catch {
-    payload = {};
-  }
-  const giteaEvent = c.req.header("x-gitea-event") ?? "";
-  const action = typeof payload.action === "string" ? payload.action : "";
-  const repository = (payload.repository as { full_name?: string } | undefined) ?? undefined;
-  const repoFullName = repository?.full_name ?? "";
-  const prPayload = payload.pull_request as { number?: number } | undefined;
-  const prNumber = typeof payload.number === "number" ? payload.number : prPayload?.number;
-
-  if (
-    giteaEvent === "pull_request" &&
-    ["opened", "synchronize", "synchronized", "reopened"].includes(action) &&
-    typeof prNumber === "number"
-  ) {
-    await enqueueVcsReview("gitea", repoFullName, prNumber);
-  }
-
-  return c.json({ status: "ok" });
-});
-
 app.post("/api/payments/webhook", async (c) => {
   let id: string | null = null;
   const contentType = c.req.header("content-type") ?? "";
@@ -1390,7 +1221,6 @@ app.post("/api/payments/webhook", async (c) => {
   }
 
   let priorPlan: PlanId | null = null;
-  let priorStatus: string | null = null;
   try {
     const mollie = await createMollieClient();
     const payment = await mollie.payments.get(id);
@@ -1399,13 +1229,11 @@ app.post("/api/payments/webhook", async (c) => {
       const [row] = await db
         .select({
           plan: schema.teamSubscriptions.plan,
-          status: schema.teamSubscriptions.status,
         })
         .from(schema.teamSubscriptions)
         .where(eq(schema.teamSubscriptions.orgId, meta.orgId))
         .limit(1);
       priorPlan = row?.plan ?? null;
-      priorStatus = row?.status ?? null;
     }
   } catch (err) {
     console.warn("[api] payments webhook prefetch failed", err);
@@ -1483,8 +1311,9 @@ app.post("/api/payments/webhook", async (c) => {
               }
             }
           } else if (
-            (newStatus === "failed" || newStatus === "canceled" || newStatus === "expired") &&
-            priorStatus === "active"
+            newStatus === "failed" ||
+            newStatus === "canceled" ||
+            newStatus === "expired"
           ) {
             for (const email of ownerEmails) {
               await enqueueEmail("payment-failed", email, { teamName });
@@ -1651,6 +1480,205 @@ app.post(
     return c.json({ ok: true });
   },
 );
+
+app.get("/api/me/notifications", async (c) => {
+  const user = c.get("user");
+  const settings = await getNotificationSettings(user.id);
+  return c.json({ settings });
+});
+
+app.put(
+  "/api/me/notifications",
+  zValidator("json", notificationSettingsSchema, (result, c) => {
+    if (!result.success) {
+      return jsonError(
+        c,
+        400,
+        "validation_error",
+        result.error.issues.map((i) => i.message).join("; "),
+      );
+    }
+  }),
+  async (c) => {
+    const user = c.get("user");
+    const body = c.req.valid("json");
+    const settings = await upsertNotificationSettings(user.id, body);
+    await audit(null, user.id, "account.notification_settings_updated", { settings }).catch(
+      () => undefined,
+    );
+    return c.json({ settings });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Two-factor authentication (TOTP authenticator app)
+//
+// Better Auth's `twoFactor` plugin exposes the heavy lifting via the auth
+// handler (/api/auth/two-factor/*), but the management endpoints are wrapped
+// here so we can attach audit-log entries and the 2fa-enabled / 2fa-disabled
+// notification emails. The sign-in second-factor verification is NOT here: it
+// happens before there is a full session, so the client calls the plugin's
+// verifyTOTP endpoint directly from the /two-factor page.
+//
+// Flow:
+//   1. POST /api/me/2fa/enable {password}  -> {totpURI, backupCodes} (unverified)
+//   2. user scans the QR, then POST /api/me/2fa/verify {code} -> marks verified
+//   3. POST /api/me/2fa/disable {password}  -> removes 2FA
+// ---------------------------------------------------------------------------
+
+app.get("/api/me/2fa", async (c) => {
+  const user = c.get("user");
+  const [row] = await db
+    .select({ verified: schema.twoFactor.verified })
+    .from(schema.twoFactor)
+    .where(eq(schema.twoFactor.userId, user.id))
+    .limit(1);
+  return c.json({ enabled: row?.verified === true });
+});
+
+app.post(
+  "/api/me/2fa/enable",
+  zValidator("json", enable2faSchema, (result, c) => {
+    if (!result.success) {
+      return jsonError(
+        c,
+        400,
+        "validation_error",
+        result.error.issues.map((i) => i.message).join("; "),
+      );
+    }
+  }),
+  async (c) => {
+    const body = c.req.valid("json");
+    try {
+      const res = (await auth.api.enableTwoFactor({
+        body: { password: body.password },
+        headers: c.req.raw.headers,
+      })) as { totpURI?: string; backupCodes?: string[] };
+      return c.json({
+        totpURI: res.totpURI ?? null,
+        backupCodes: res.backupCodes ?? [],
+      });
+    } catch (err) {
+      const status = (err as { status?: number }).status ?? 400;
+      const message = err instanceof Error ? err.message : "Could not enable 2FA";
+      return jsonError(c, status as ContentfulStatusCode, "2fa_enable_failed", message);
+    }
+  },
+);
+
+app.post(
+  "/api/me/2fa/verify",
+  zValidator("json", verify2faSchema, (result, c) => {
+    if (!result.success) {
+      return jsonError(
+        c,
+        400,
+        "validation_error",
+        result.error.issues.map((i) => i.message).join("; "),
+      );
+    }
+  }),
+  async (c) => {
+    const user = c.get("user");
+    const body = c.req.valid("json");
+    try {
+      await auth.api.verifyTOTP({
+        body: { code: body.code },
+        headers: c.req.raw.headers,
+      });
+    } catch (err) {
+      const status = (err as { status?: number }).status ?? 400;
+      const message = err instanceof Error ? err.message : "Invalid verification code";
+      return jsonError(c, status as ContentfulStatusCode, "2fa_verify_failed", message);
+    }
+    await enqueueEmail("2fa-enabled", user.email, { name: user.name }).catch((err: unknown) => {
+      console.warn("[api] 2fa-enabled email failed", err);
+    });
+    await audit(null, user.id, "account.2fa_enabled", {}).catch(() => undefined);
+    return c.json({ ok: true });
+  },
+);
+
+app.post(
+  "/api/me/2fa/disable",
+  zValidator("json", disable2faSchema, (result, c) => {
+    if (!result.success) {
+      return jsonError(
+        c,
+        400,
+        "validation_error",
+        result.error.issues.map((i) => i.message).join("; "),
+      );
+    }
+  }),
+  async (c) => {
+    const user = c.get("user");
+    const body = c.req.valid("json");
+    try {
+      await auth.api.disableTwoFactor({
+        body: { password: body.password },
+        headers: c.req.raw.headers,
+      });
+    } catch (err) {
+      const status = (err as { status?: number }).status ?? 400;
+      const message = err instanceof Error ? err.message : "Could not disable 2FA";
+      return jsonError(c, status as ContentfulStatusCode, "2fa_disable_failed", message);
+    }
+    await enqueueEmail("2fa-disabled", user.email, { name: user.name }).catch((err: unknown) => {
+      console.warn("[api] 2fa-disabled email failed", err);
+    });
+    await audit(null, user.id, "account.2fa_disabled", {}).catch(() => undefined);
+    return c.json({ ok: true });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Passkeys (WebAuthn)
+//
+// Registration and sign-in happen client-side via the passkey plugin (they
+// drive the browser WebAuthn prompt). Listing and deletion go through these
+// thin wrappers so we can audit removals and keep the shape uniform with the
+// rest of /api/me.
+// ---------------------------------------------------------------------------
+
+app.get("/api/me/passkeys", async (c) => {
+  const user = c.get("user");
+  const rows = await db
+    .select({
+      id: schema.passkey.id,
+      name: schema.passkey.name,
+      deviceType: schema.passkey.deviceType,
+      backedUp: schema.passkey.backedUp,
+      createdAt: schema.passkey.createdAt,
+    })
+    .from(schema.passkey)
+    .where(eq(schema.passkey.userId, user.id))
+    .orderBy(desc(schema.passkey.createdAt));
+  return c.json({
+    passkeys: rows.map((r) => ({
+      id: r.id,
+      name: r.name ?? null,
+      deviceType: r.deviceType,
+      backedUp: r.backedUp,
+      createdAt: r.createdAt,
+    })),
+  });
+});
+
+app.delete("/api/me/passkeys/:id", async (c) => {
+  const user = c.get("user");
+  const id = c.req.param("id");
+  try {
+    await auth.api.deletePasskey({ body: { id }, headers: c.req.raw.headers });
+  } catch (err) {
+    const status = (err as { status?: number }).status ?? 400;
+    const message = err instanceof Error ? err.message : "Could not remove passkey";
+    return jsonError(c, status as ContentfulStatusCode, "passkey_delete_failed", message);
+  }
+  await audit(null, user.id, "account.passkey_removed", { passkeyId: id }).catch(() => undefined);
+  return c.json({ ok: true });
+});
 
 app.post(
   "/api/teams",
@@ -1892,7 +1920,6 @@ app.post(
     const orgId = c.req.param("id");
     await requireOrgAccess(c, orgId, user.id);
     const body = c.req.valid("json");
-    const webhookSecret = body.webhookSecret ?? randomBytes(32).toString("hex");
     const [project] = await db
       .insert(schema.projects)
       .values({
@@ -1900,7 +1927,6 @@ app.post(
         name: body.name,
         provider: body.provider,
         repoFullName: body.repoFullName,
-        webhookSecret,
         pollingEnabled: body.pollingEnabled ?? false,
       })
       .returning();
@@ -2017,6 +2043,7 @@ app.get("/api/teams/:id/billing", async (c) => {
   const needsRecover = await (async () => {
     const [row] = await db
       .select({
+        plan: schema.teamSubscriptions.plan,
         mollieCustomerId: schema.teamSubscriptions.mollieCustomerId,
         mollieSubscriptionId: schema.teamSubscriptions.mollieSubscriptionId,
         status: schema.teamSubscriptions.status,
@@ -2024,13 +2051,15 @@ app.get("/api/teams/:id/billing", async (c) => {
       .from(schema.teamSubscriptions)
       .where(eq(schema.teamSubscriptions.orgId, orgId))
       .limit(1);
-    return Boolean(
-      row?.mollieCustomerId && (!row.mollieSubscriptionId || row.status === "pending"),
-    );
+    if (row?.mollieCustomerId && (!row.mollieSubscriptionId || row.status === "pending")) {
+      return (row.plan ?? "free") as PlanId;
+    }
+    return null;
   })();
-  if (needsRecover) {
+  if (needsRecover !== null) {
     try {
-      await recoverSubscription(orgId);
+      const result = await recoverSubscription(orgId);
+      await emitPlanChangeEmails(orgId, needsRecover, result.plan);
     } catch (err) {
       console.warn("[api] billing recover on read failed", err);
     }
@@ -2149,8 +2178,10 @@ app.post("/api/teams/:id/billing/sync", async (c) => {
   const user = c.get("user");
   const orgId = c.req.param("id");
   await requireOrgAccess(c, orgId, user.id);
+  const priorPlan = await getOrgPlan(orgId);
   try {
     const result = await recoverSubscription(orgId);
+    await emitPlanChangeEmails(orgId, priorPlan, result.plan);
     return c.json({ ok: true, plan: result.plan, status: result.status });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Mollie sync failed";
@@ -2543,7 +2574,7 @@ app.post("/api/projects/:id/pulls/:n/review", async (c) => {
       );
     }
     // Deep reviews are Plus/Pro only. Gate explicitly here with a 403 so the
-    // dashboard gets a clear error (webhook/comment triggers downgrade silently
+    // dashboard gets a clear error (comment triggers downgrade silently
     // inside resolveEnqueueDepth instead).
     if (parsed.depth === "deep" && planRank(plan) < planRank("plus")) {
       throw new ApiError(403, "plan_required", "Deep reviews require Plus or Pro");
@@ -3023,25 +3054,72 @@ app.get("/api/teams/:id/audit", async (c) => {
   return c.json(rows);
 });
 
+// ---------------------------------------------------------------------------
+// Team SSO (Pro feature)
+//
+// Backed by Better Auth's SSO plugin (`@better-auth/sso`), which stores
+// provider configs in the `ssoProvider` table and mounts the SAML/OIDC
+// handshake endpoints under `/api/auth/sso/*`. These routes are thin wrappers
+// that:
+//   • gate the feature on the Pro plan + org-admin role
+//   • pin each org to a single provider (slug `org-${orgId}`) so callback URLs
+//     stay stable across reconfiguration
+//   • map the form payload to/from Better Auth's native shape
+//
+// Any standards-compliant IdP works (Authentik, Okta, Entra, Keycloak, Zitadel,
+// Google Workspace, …) — speak SAML 2.0 or OIDC to it.
+// ---------------------------------------------------------------------------
+
+function ssoProviderSlug(orgId: string): string {
+  return `org-${orgId}`;
+}
+
+function ssoCallbackUrl(slug: string): string {
+  // SP ACS URL — Better Auth's SAML plugin reads the SAMLResponse here.
+  return `${env.BETTER_AUTH_URL}/api/auth/sso/saml2/callback/${slug}`;
+}
+
+function deriveProtocol(p: { oidcConfig?: unknown; samlConfig?: unknown }): "saml" | "oidc" | null {
+  if (p.samlConfig) return "saml";
+  if (p.oidcConfig) return "oidc";
+  return null;
+}
+
 app.get("/api/teams/:id/sso", async (c) => {
   const user = c.get("user");
   const orgId = c.req.param("id");
   await requireOrgAdmin(c, orgId, user.id);
   await requirePlan(c, orgId, "pro");
-  const [row] = await db
-    .select()
-    .from(schema.sso)
-    .where(eq(schema.sso.organizationId, orgId))
-    .limit(1);
-  if (!row) {
+
+  // List is per-user (all their orgs); filter to this one. We pin the slug so
+  // the lookup is exact even if a stale row lingers elsewhere.
+  const slug = ssoProviderSlug(orgId);
+  let providers: { providerId: string }[] = [];
+  try {
+    const res = (await auth.api.listSSOProviders({
+      headers: c.req.raw.headers,
+    })) as unknown as { providers?: { providerId: string }[] };
+    providers = res.providers ?? [];
+  } catch (err) {
+    console.warn("[api] listSSOProviders failed", err);
     return c.json(null);
   }
-  const rawConfig = (row.config as Record<string, unknown> | null) ?? {};
-  const safeConfig: Record<string, unknown> = { ...rawConfig };
-  if (typeof safeConfig.clientSecret === "string") {
-    safeConfig.clientSecret = safeConfig.clientSecret ? "{{encrypted}}" : null;
+  const found = providers.find((p) => p.providerId === slug);
+  if (!found) return c.json(null);
+
+  // Fetch the full (redacted) provider detail — gives us cert fingerprint,
+  // discovery endpoints, etc. for display.
+  let detail: Record<string, unknown> | null = null;
+  try {
+    detail = (await auth.api.getSSOProvider({
+      query: { providerId: slug },
+      headers: c.req.raw.headers,
+    })) as unknown as Record<string, unknown> | null;
+  } catch (err) {
+    console.warn("[api] getSSOProvider failed", err);
   }
-  return c.json({ ...row, config: safeConfig });
+  const protocol = deriveProtocol(detail ?? {});
+  return c.json({ ...(detail ?? {}), protocol });
 });
 
 app.post(
@@ -3063,50 +3141,141 @@ app.post(
     await requirePlan(c, orgId, "pro");
     const body = c.req.valid("json");
 
-    if (body.providerId === "saml") {
-      const parsed = samlConfigSchema.safeParse(body.config);
-      if (!parsed.success) {
+    // Validate per-protocol required fields. On a *fresh* registration we also
+    // require the secret material (cert / client secret); on an update we go
+    // through `updateSSOProvider`, which patches only the provided fields, so
+    // the admin can change e.g. just the domain without re-pasting the cert.
+    if (body.protocol === "saml") {
+      if (!body.saml || !body.saml.entryURL || !body.saml.entityId) {
+        throw new ApiError(400, "validation_error", "SAML config requires entryURL and entityId");
+      }
+    } else if (body.protocol === "oidc") {
+      if (!body.oidc || !body.oidc.clientId || !body.oidc.issuerUrl) {
+        throw new ApiError(400, "validation_error", "OIDC config requires clientId and issuerUrl");
+      }
+    } else {
+      throw new ApiError(400, "validation_error", "Unknown SSO protocol");
+    }
+
+    const slug = ssoProviderSlug(orgId);
+    const headers = c.req.raw.headers;
+
+    // Detect an existing provider for this org so we can pick the right plugin
+    // method (register vs update) and enforce secret-presence rules.
+    let existingSlug: string | null = null;
+    try {
+      const res = (await auth.api.listSSOProviders({ headers })) as unknown as {
+        providers?: { providerId: string }[];
+      };
+      if (res.providers?.some((p) => p.providerId === slug)) {
+        existingSlug = slug;
+      }
+    } catch (err) {
+      console.warn("[api] listSSOProviders (pre-upsert) failed", err);
+    }
+
+    if (!existingSlug) {
+      // First registration — secret material is mandatory.
+      if (body.protocol === "saml" && !body.saml?.certificate) {
         throw new ApiError(
           400,
           "validation_error",
-          "SAML config requires entryURL, certificate, entityId",
+          "A certificate is required when registering a new SAML provider.",
         );
       }
-    } else {
-      const parsed = oidcConfigSchema.safeParse(body.config);
-      if (!parsed.success) {
-        throw new ApiError(400, "validation_error", "OIDC config requires clientId and issuerUrl");
+      if (body.protocol === "oidc" && !body.oidc?.clientSecret) {
+        throw new ApiError(
+          400,
+          "validation_error",
+          "A client secret is required when registering a new OIDC provider.",
+        );
       }
     }
 
-    const storedConfig: Record<string, unknown> = {
-      ...(body.config as Record<string, unknown>),
-    };
-    if (typeof storedConfig.clientSecret === "string" && storedConfig.clientSecret.length > 0) {
-      storedConfig.clientSecret = encryptSecret(storedConfig.clientSecret);
+    try {
+      if (!existingSlug) {
+        // Register — full config required.
+        if (body.protocol === "saml" && body.saml) {
+          await auth.api.registerSSOProvider({
+            body: {
+              providerId: slug,
+              domain: body.domain.trim().toLowerCase(),
+              issuer: body.saml.entityId.trim(),
+              organizationId: orgId,
+              samlConfig: {
+                entryPoint: body.saml.entryURL.trim(),
+                cert: body.saml.certificate?.trim() ?? "",
+                callbackUrl: ssoCallbackUrl(slug),
+                spMetadata: {},
+              },
+            },
+            headers,
+          });
+        } else if (body.protocol === "oidc" && body.oidc) {
+          const scopes = (body.oidc.scopes ?? "").trim().split(/\s+/).filter(Boolean);
+          await auth.api.registerSSOProvider({
+            body: {
+              providerId: slug,
+              domain: body.domain.trim().toLowerCase(),
+              issuer: body.oidc.issuerUrl.trim().replace(/\/+$/, ""),
+              organizationId: orgId,
+              oidcConfig: {
+                clientId: body.oidc.clientId.trim(),
+                clientSecret: body.oidc.clientSecret?.trim() ?? "",
+                ...(scopes.length > 0 ? { scopes } : {}),
+              },
+            },
+            headers,
+          });
+        }
+      } else {
+        // Update — patch only the provided fields. The plugin keeps the stored
+        // cert/secret when the optional fields are omitted.
+        const updateBody: {
+          providerId: string;
+          issuer?: string;
+          domain?: string;
+          samlConfig?: { entryPoint?: string; cert?: string; callbackUrl?: string };
+          oidcConfig?: {
+            clientId?: string;
+            clientSecret?: string;
+            scopes?: string[];
+          };
+        } = { providerId: slug, domain: body.domain.trim().toLowerCase() };
+
+        if (body.protocol === "saml" && body.saml) {
+          updateBody.issuer = body.saml.entityId.trim();
+          updateBody.samlConfig = {
+            entryPoint: body.saml.entryURL.trim(),
+            callbackUrl: ssoCallbackUrl(slug),
+            ...(body.saml.certificate && body.saml.certificate.trim().length > 0
+              ? { cert: body.saml.certificate.trim() }
+              : {}),
+          };
+        } else if (body.protocol === "oidc" && body.oidc) {
+          updateBody.issuer = body.oidc.issuerUrl.trim().replace(/\/+$/, "");
+          const scopes = (body.oidc.scopes ?? "").trim().split(/\s+/).filter(Boolean);
+          updateBody.oidcConfig = {
+            clientId: body.oidc.clientId.trim(),
+            ...(body.oidc.clientSecret && body.oidc.clientSecret.length > 0
+              ? { clientSecret: body.oidc.clientSecret }
+              : {}),
+            ...(scopes.length > 0 ? { scopes } : {}),
+          };
+        }
+        await auth.api.updateSSOProvider({ body: updateBody, headers });
+      }
+    } catch (err) {
+      const status = (err as { status?: number }).status ?? 400;
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : "SSO registration failed. If OIDC, check that the issuer URL is reachable and serves a valid discovery document.";
+      return jsonError(c, status as ContentfulStatusCode, "sso_registration_failed", message);
     }
 
-    const [existing] = await db
-      .select({ id: schema.sso.id })
-      .from(schema.sso)
-      .where(eq(schema.sso.organizationId, orgId))
-      .limit(1);
-    if (existing) {
-      await db
-        .update(schema.sso)
-        .set({ domain: body.domain, providerId: body.providerId, config: storedConfig })
-        .where(eq(schema.sso.id, existing.id));
-    } else {
-      await db.insert(schema.sso).values({
-        id: randomUUID(),
-        organizationId: orgId,
-        domain: body.domain,
-        providerId: body.providerId,
-        config: storedConfig,
-      });
-    }
     await audit(orgId, user.id, "team.sso_configured", {
-      providerId: body.providerId,
+      protocol: body.protocol,
       domain: body.domain,
     });
     return c.json({ ok: true });
@@ -3118,7 +3287,17 @@ app.delete("/api/teams/:id/sso", async (c) => {
   const orgId = c.req.param("id");
   await requireOrgAdmin(c, orgId, user.id);
   await requirePlan(c, orgId, "pro");
-  await db.delete(schema.sso).where(eq(schema.sso.organizationId, orgId));
+  const slug = ssoProviderSlug(orgId);
+  try {
+    await auth.api.deleteSSOProvider({
+      body: { providerId: slug },
+      headers: c.req.raw.headers,
+    });
+  } catch (err) {
+    const status = (err as { status?: number }).status ?? 400;
+    const message = err instanceof Error ? err.message : "SSO removal failed";
+    return jsonError(c, status as ContentfulStatusCode, "sso_removal_failed", message);
+  }
   await audit(orgId, user.id, "team.sso_removed", {});
   return c.json({ ok: true });
 });
@@ -3141,13 +3320,16 @@ app.post(
     if (!domain) {
       throw new ApiError(400, "validation_error", "Invalid email");
     }
+    // The plugin's sign-in endpoint can resolve by email directly; we expose a
+    // thin lookup so the /sso landing page can tell the user whether SSO exists
+    // for their domain (and which protocol) before kicking off the handshake.
     const [row] = await db
       .select({
-        providerId: schema.sso.providerId,
-        organizationId: schema.sso.organizationId,
+        providerId: schema.ssoProvider.providerId,
+        organizationId: schema.ssoProvider.organizationId,
       })
-      .from(schema.sso)
-      .where(eq(schema.sso.domain, domain))
+      .from(schema.ssoProvider)
+      .where(eq(schema.ssoProvider.domain, domain))
       .limit(1);
     return c.json(row ?? null);
   },

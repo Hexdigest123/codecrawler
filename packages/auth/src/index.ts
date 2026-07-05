@@ -1,13 +1,28 @@
+import { passkey } from "@better-auth/passkey";
+import { sso } from "@better-auth/sso";
 import { db, schema } from "@codecrawler/db";
 import { enqueueEmail } from "@codecrawler/email";
 import { env } from "@codecrawler/shared";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { APIError } from "better-auth/api";
-import { organization } from "better-auth/plugins";
+import { organization, twoFactor } from "better-auth/plugins";
 import { eq } from "drizzle-orm";
 
 export type SignupMode = "open" | "closed" | "domain_restricted" | "approval";
+
+// WebAuthn Relying Party config for passkeys. The rpID is the registrable
+// domain of the web app (where the browser runs the ceremony), and `origin` is
+// the full web origin. Both derive from PUBLIC_WEB_URL so dev (localhost) and
+// prod (codecrawler.merckel.dev) work without per-env code changes.
+const publicWebOrigin = env.PUBLIC_WEB_URL.replace(/\/$/, "");
+const passkeyRpID = (() => {
+  try {
+    return new URL(publicWebOrigin).hostname;
+  } catch {
+    return "localhost";
+  }
+})();
 
 /**
  * Platform-wide sign-up + account gate, read on every sign-up attempt. Sourced
@@ -53,7 +68,23 @@ export const auth = betterAuth({
   secret: env.BETTER_AUTH_SECRET,
   baseURL: env.BETTER_AUTH_URL,
   trustedOrigins: [env.CORS_ORIGIN, env.PUBLIC_WEB_URL],
-  emailAndPassword: { enabled: true },
+  emailAndPassword: {
+    enabled: true,
+    // Password reset ("forgot password") flow. Better Auth generates a signed,
+    // single-use token and embeds it into `url`; we hand the URL to the existing
+    // `password-reset` email template. The mail send is fire-and-forget to
+    // avoid leaking whether an account exists via response timing.
+    sendResetPassword: async ({ user, url }) => {
+      const name = user.name ?? "";
+      void enqueueEmail("password-reset", user.email, {
+        name,
+        resetUrl: url,
+      }).catch((err) => {
+        console.warn("[auth] password-reset email failed", err);
+      });
+    },
+    resetPasswordTokenExpiresIn: 60 * 60,
+  },
   socialProviders: {
     ...(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET
       ? {
@@ -64,7 +95,16 @@ export const auth = betterAuth({
         }
       : {}),
   },
-  plugins: [organization({ allowUserToCreateOrganization: true })],
+  plugins: [
+    organization({ allowUserToCreateOrganization: true }),
+    sso(),
+    twoFactor(),
+    passkey({
+      rpID: passkeyRpID,
+      rpName: env.PUBLIC_APP_NAME,
+      origin: publicWebOrigin,
+    }),
+  ],
   user: {
     additionalFields: {
       role: {

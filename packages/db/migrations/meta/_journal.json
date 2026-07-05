@@ -43,6 +43,27 @@
       "when": 1719500500000,
       "tag": "0005_drop_github_app_add_polling",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1719500600000,
+      "tag": "0006_notification_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1719500700000,
+      "tag": "0007_sso_provider",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1719500800000,
+      "tag": "0008_passkey_and_2fa",
+      "breakpoints": true
     }
   ]
 }

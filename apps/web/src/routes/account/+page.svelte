@@ -1,4 +1,5 @@
 <script lang="ts">
+import KeyRound from "@lucide/svelte/icons/key-round";
 import { authClient } from "@codecrawler/auth/client";
 import { ApiError, api } from "$lib/api";
 import { toastError, toastSuccess } from "$lib/toast.svelte";
@@ -72,6 +73,32 @@ function inputClass() {
       Manage your sign-in details.
     </p>
   </header>
+
+  <a
+    href="/account/security"
+    class="flex items-center justify-between rounded-xl border border-neutral-200 p-5 text-sm hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-900"
+  >
+    <span>
+      <span class="font-medium">Security</span>
+      <span class="mt-0.5 block text-xs text-neutral-500">
+        Two-factor authentication, passkeys, and account sign-in protection.
+      </span>
+    </span>
+    <KeyRound class="size-5 text-neutral-400" />
+  </a>
+
+  <a
+    href="/account/notifications"
+    class="flex items-center justify-between rounded-xl border border-neutral-200 p-5 text-sm hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-900"
+  >
+    <span>
+      <span class="font-medium">Notification preferences</span>
+      <span class="mt-0.5 block text-xs text-neutral-500">
+        Choose which emails you receive (reviews, teams, billing, integrations).
+      </span>
+    </span>
+    <span class="text-neutral-400">→</span>
+  </a>
 
   <section
     class="rounded-xl border border-neutral-200 p-5 dark:border-neutral-800"
