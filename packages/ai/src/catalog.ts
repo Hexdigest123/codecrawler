@@ -153,7 +153,8 @@ async function fetchSaiaCatalog(orgId: string | undefined): Promise<CatalogModel
   if (orgId) {
     key = await getByokKeyByApiKeyProvider(orgId, "saia");
   }
-  const apiIds = key ? await fetchSaiaModelIds(key) : null;
+  if (!key) return [];
+  const apiIds = await fetchSaiaModelIds(key);
   const ids = apiIds ?? SAIA_KNOWN_MODELS.map((m) => m.id);
   const known = new Map(SAIA_KNOWN_MODELS.map((m) => [m.id.toLowerCase(), m]));
   const out: CatalogModel[] = [];

@@ -34,6 +34,10 @@ const envSchema = z.object({
   BETTER_AUTH_URL: asString.url(),
   BETTER_AUTH_SECRET: asString.min(1, "BETTER_AUTH_SECRET is required"),
   TOKEN_ENCRYPTION_KEY: asString.min(1, "TOKEN_ENCRYPTION_KEY is required"),
+  // Optional rotation ring: comma-separated "id:base64" pairs. id 0 must equal
+  // TOKEN_ENCRYPTION_KEY; other ids add new keys. The first entry becomes the
+  // active encryption key; the rest are accepted only for decryption.
+  TOKEN_ENCRYPTION_KEYS: asString.optional(),
   WEBHOOK_PUBLIC_URL: asString.url(),
   DATABASE_URL: asString.min(1, "DATABASE_URL is required"),
   REDIS_URL: asString.min(1, "REDIS_URL is required"),

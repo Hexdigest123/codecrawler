@@ -1,10 +1,15 @@
 <script lang="ts">
 import { ApiError, api } from "$lib/api";
+import { confirm } from "$lib/confirm.svelte";
 import { toastError, toastSuccess } from "$lib/toast.svelte";
 import { API_KEY_PROVIDERS, type ApiKeyRow, type ApiKeyStatus } from "$lib/types";
 import type { PageProps } from "./$types";
 
 let { data }: PageProps = $props();
+
+const isAdmin = $derived(
+  data.team?.role === "owner" || data.team?.role === "admin",
+);
 
 let keysOverride = $state<ApiKeyRow[] | null>(null);
 const keys = $derived<ApiKeyRow[]>(keysOverride ?? data.keys ?? []);
@@ -31,7 +36,7 @@ async function addKey(event: SubmitEvent) {
   if (key.trim().length === 0) return;
   adding = true;
   try {
-    await api(`/api/teams/${data.teamId}/api-keys`, {
+    const res = await api<ApiKeyRow>(`/api/teams/${data.teamId}/api-keys`, {
       method: "POST",
       body: JSON.stringify({
         provider,
@@ -42,7 +47,11 @@ async function addKey(event: SubmitEvent) {
     key = "";
     label = "";
     keysOverride = await api<ApiKeyRow[]>(`/api/teams/${data.teamId}/api-keys`);
-    toastSuccess(`${provider} key added.`);
+    if (res.status === "valid") {
+      toastSuccess(`${provider} key added and verified.`);
+    } else {
+      toastError(`${provider} key saved but verification failed — check the secret.`);
+    }
   } catch (err) {
     toastError(err instanceof ApiError ? err.message : "Could not add key.");
   } finally {
@@ -67,7 +76,13 @@ async function verify(targetProvider: string) {
 }
 
 async function removeKey(targetProvider: string) {
-  if (!confirm(`Remove the ${targetProvider} key?`)) return;
+  const ok = await confirm({
+    title: "Remove API key",
+    message: `Remove the ${targetProvider} key?`,
+    confirmLabel: "Remove key",
+    tone: "danger",
+  });
+  if (!ok) return;
   busyProvider = targetProvider;
   try {
     await api(`/api/teams/${data.teamId}/api-keys/${targetProvider}`, { method: "DELETE" });
@@ -97,48 +112,54 @@ async function removeKey(targetProvider: string) {
 
   <section class="rounded-xl border border-neutral-200 p-5 dark:border-neutral-800">
     <h2 class="text-sm font-semibold uppercase tracking-wide text-neutral-500">Add a key</h2>
-    <form class="mt-4 grid gap-4 sm:grid-cols-4" onsubmit={addKey} novalidate>
-      <label class="flex flex-col gap-1 text-sm">
-        <span class="font-medium">Provider</span>
-        <select
-          bind:value={provider}
-          class="input px-3 py-2"
-        >
-          {#each API_KEY_PROVIDERS as p (p)}
-            <option value={p}>{p}</option>
-          {/each}
-        </select>
-      </label>
-      <label class="flex flex-col gap-1 text-sm">
-        <span class="font-medium">Label</span>
-        <input
-          type="text"
-          bind:value={label}
-          class="input px-3 py-2"
-          placeholder="Production"
-        />
-      </label>
-      <label class="flex flex-col gap-1 text-sm sm:col-span-2">
-        <span class="font-medium">Secret key</span>
-        <input
-          type="password"
-          required
-          autocomplete="off"
-          bind:value={key}
-          class="input px-3 py-2"
-          placeholder="sk-…"
-        />
-      </label>
-      <div class="flex items-end sm:col-span-4">
-        <button
-          type="submit"
-          disabled={adding || key.trim().length === 0}
-          class="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {adding ? "Adding…" : "Add key"}
-        </button>
-      </div>
-    </form>
+    {#if isAdmin}
+      <form class="mt-4 grid gap-4 sm:grid-cols-4" onsubmit={addKey} novalidate>
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="font-medium">Provider</span>
+          <select
+            bind:value={provider}
+            class="input px-3 py-2"
+          >
+            {#each API_KEY_PROVIDERS as p (p)}
+              <option value={p}>{p}</option>
+            {/each}
+          </select>
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="font-medium">Label</span>
+          <input
+            type="text"
+            bind:value={label}
+            class="input px-3 py-2"
+            placeholder="Production"
+          />
+        </label>
+        <label class="flex flex-col gap-1 text-sm sm:col-span-2">
+          <span class="font-medium">Secret key</span>
+          <input
+            type="password"
+            required
+            autocomplete="off"
+            bind:value={key}
+            class="input px-3 py-2"
+            placeholder="sk-…"
+          />
+        </label>
+        <div class="flex items-end sm:col-span-4">
+          <button
+            type="submit"
+            disabled={adding || key.trim().length === 0}
+            class="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {adding ? "Adding…" : "Add key"}
+          </button>
+        </div>
+      </form>
+    {:else}
+      <p class="mt-4 text-sm text-neutral-600 dark:text-neutral-400">
+        Only team owners and admins can add or remove API keys.
+      </p>
+    {/if}
   </section>
 
   <section class="rounded-xl border border-neutral-200 p-5 dark:border-neutral-800">
@@ -159,22 +180,24 @@ async function removeKey(targetProvider: string) {
               </span>
             </div>
             <div class="flex items-center gap-2">
-              <button
-                type="button"
-                onclick={() => verify(row.provider)}
-                disabled={busyProvider === row.provider}
-                class="rounded-md border border-neutral-300 px-3 py-1 text-sm font-medium bg-white hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-900 dark:hover:bg-neutral-800"
-              >
-                {busyProvider === row.provider ? "…" : "Verify"}
-              </button>
-              <button
-                type="button"
-                onclick={() => removeKey(row.provider)}
-                disabled={busyProvider === row.provider}
-                class="rounded-md border border-red-300 px-3 py-1 text-sm font-medium text-red-600 bg-white hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:bg-neutral-900 dark:hover:bg-red-950"
-              >
-                Remove
-              </button>
+              {#if isAdmin}
+                <button
+                  type="button"
+                  onclick={() => verify(row.provider)}
+                  disabled={busyProvider === row.provider}
+                  class="rounded-md border border-neutral-300 px-3 py-1 text-sm font-medium bg-white hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-900 dark:hover:bg-neutral-800"
+                >
+                  {busyProvider === row.provider ? "…" : "Verify"}
+                </button>
+                <button
+                  type="button"
+                  onclick={() => removeKey(row.provider)}
+                  disabled={busyProvider === row.provider}
+                  class="rounded-md border border-red-300 px-3 py-1 text-sm font-medium text-red-600 bg-white hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:bg-neutral-900 dark:hover:bg-red-950"
+                >
+                  Remove
+                </button>
+              {/if}
             </div>
           </li>
         {/each}

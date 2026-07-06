@@ -25,7 +25,7 @@ export async function getByokKeyByApiKeyProvider(
     .orderBy(desc(schema.apiKeys.createdAt))
     .limit(1);
   if (rows.length === 0) return null;
-  return decryptSecret(rows[0].encryptedKey);
+  return decryptSecret(rows[0].encryptedKey, { aad: "api_key" });
 }
 
 export async function getActiveByokKey(

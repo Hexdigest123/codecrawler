@@ -11,6 +11,7 @@ import Sun from "@lucide/svelte/icons/sun";
 import UserCircle from "@lucide/svelte/icons/user-circle";
 import UserPlus from "@lucide/svelte/icons/user-plus";
 import Brand from "$lib/components/Brand.svelte";
+import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
 import Toasts from "$lib/components/Toasts.svelte";
 import { toggleTheme } from "$lib/theme";
 
@@ -123,3 +124,4 @@ async function signOut() {
 </main>
 
 <Toasts />
+<ConfirmDialog />
