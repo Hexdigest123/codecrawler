@@ -1,5 +1,9 @@
 <script lang="ts">
 import ArrowLeft from "@lucide/svelte/icons/arrow-left";
+import { invalidateAll } from "$app/navigation";
+import { ApiError, api } from "$lib/api";
+import { confirm } from "$lib/confirm.svelte";
+import { toastError, toastSuccess } from "$lib/toast.svelte";
 import { PLAN_LABEL, type UsageState } from "$lib/types";
 import type { PageProps } from "./$types";
 
@@ -8,6 +12,28 @@ let { data }: PageProps = $props();
 const team = $derived(data.team);
 const projects = $derived(data.projects ?? []);
 const memberCount = $derived(team?.membersCount ?? team?.members?.length ?? null);
+const isAdmin = $derived(team?.role === "owner" || team?.role === "admin");
+let busyProjectId = $state<string | null>(null);
+
+async function removeProject(projectId: string, name: string) {
+  const ok = await confirm({
+    title: "Remove project",
+    message: `Remove the project “${name}” from this team? This deletes its reviews and findings.`,
+    confirmLabel: "Remove project",
+    tone: "danger",
+  });
+  if (!ok) return;
+  busyProjectId = projectId;
+  try {
+    await api(`/api/teams/${team?.organization?.id}/projects/${projectId}`, { method: "DELETE" });
+    await invalidateAll();
+    toastSuccess(`“${name}” removed.`);
+  } catch (err) {
+    toastError(err instanceof ApiError ? err.message : "Could not remove the project.");
+  } finally {
+    busyProjectId = null;
+  }
+}
 
 function formatRemaining(u: UsageState | undefined): string {
   if (!u) return "—";
@@ -194,12 +220,25 @@ function usageTone(u: UsageState | undefined): string {
                 {project.provider ?? "github"} · {project.repoFullName ?? "—"}
               </p>
             </div>
-            <a
-              href={`/projects/${project.id}`}
-              class="rounded-md border border-neutral-300 px-3 py-1 text-sm font-medium bg-white hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:hover:bg-neutral-800"
-            >
-              Open
-            </a>
+            <div class="flex items-center gap-2">
+              <a
+                href={`/projects/${project.id}`}
+                class="rounded-md border border-neutral-300 px-3 py-1 text-sm font-medium bg-white hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:hover:bg-neutral-800"
+              >
+                Open
+              </a>
+              {#if isAdmin}
+                <button
+                  type="button"
+                  onclick={() => removeProject(project.id, project.name)}
+                  disabled={busyProjectId === project.id}
+                  aria-label={`Remove ${project.name}`}
+                  class="rounded-md border border-red-300 px-3 py-1 text-sm font-medium text-red-600 bg-white hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:bg-neutral-900 dark:hover:bg-red-950"
+                >
+                  {busyProjectId === project.id ? "…" : "Remove"}
+                </button>
+              {/if}
+            </div>
           </li>
         {/each}
       </ul>

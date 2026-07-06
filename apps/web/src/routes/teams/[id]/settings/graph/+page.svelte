@@ -16,6 +16,10 @@
 
   let { data }: PageProps = $props();
 
+  const isAdmin = $derived(
+    data.teamRole === "owner" || data.teamRole === "admin",
+  );
+
   const title = "Agent graph — PR review";
 
   // defaultDepth lives on the agent profile, not the per-node graph, so it's
@@ -56,45 +60,57 @@
 </svelte:head>
 
 <section class="flex flex-col gap-6">
-  <div class="rounded-xl border border-neutral-200 p-5 dark:border-neutral-800">
-    <div class="flex flex-wrap items-baseline justify-between gap-2">
-      <h2 class="text-sm font-semibold uppercase tracking-wide text-neutral-500">
-        Default review depth
-      </h2>
-      {#if !canDeep}
-        <span class="text-xs text-neutral-500">Deep requires Plus or Pro.</span>
-      {/if}
+  {#if !isAdmin}
+    <section
+      class="rounded-xl border border-neutral-200 p-6 dark:border-neutral-800"
+      aria-label="Restricted"
+    >
+      <h2 class="text-lg font-semibold">Admins only</h2>
+      <p class="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
+        Only team owners and admins can change review depth or per-node model assignments.
+      </p>
+    </section>
+  {:else}
+    <div class="rounded-xl border border-neutral-200 p-5 dark:border-neutral-800">
+      <div class="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 class="text-sm font-semibold uppercase tracking-wide text-neutral-500">
+          Default review depth
+        </h2>
+        {#if !canDeep}
+          <span class="text-xs text-neutral-500">Deep requires Plus or Pro.</span>
+        {/if}
+      </div>
+      <p class="mt-1 text-xs text-neutral-500">
+        The tier used when a review is triggered without an explicit depth (e.g. a polled
+        PR). Comment <code class="rounded bg-neutral-100 px-1 dark:bg-neutral-800">/codecrawler deep</code>
+        on a PR to override per-review. The global <code class="rounded bg-neutral-100 px-1 dark:bg-neutral-800">REVIEW_AGENT_MODE</code>
+        setting can force the static path regardless.
+      </p>
+      <div class="mt-3 grid gap-2 sm:grid-cols-3">
+        {#each DEPTH_TIERS as tier (tier)}
+          {@const disabled = depthDisabled(tier)}
+          <button
+            type="button"
+            onclick={() => saveDepth(tier)}
+            disabled={disabled || savingDepth}
+            aria-pressed={currentDepth === tier}
+            class="flex flex-col gap-1 rounded-lg border p-3 text-left text-sm transition disabled:cursor-not-allowed disabled:opacity-50 {currentDepth ===
+            tier
+              ? "border-brand-500 bg-brand-50 dark:bg-brand-950"
+              : "border-neutral-200 hover:border-neutral-300 dark:border-neutral-800 dark:hover:border-neutral-700"}"
+          >
+            <span class="flex items-center justify-between">
+              <span class="font-medium">{DEPTH_LABEL[tier]}</span>
+              {#if currentDepth === tier}
+                <span class="text-[10px] font-medium uppercase text-brand-600 dark:text-brand-400">current</span>
+              {/if}
+            </span>
+            <span class="text-xs text-neutral-500">{DEPTH_DESCRIPTION[tier]}</span>
+          </button>
+        {/each}
+      </div>
     </div>
-    <p class="mt-1 text-xs text-neutral-500">
-      The tier used when a review is triggered without an explicit depth (e.g. a polled
-      PR). Comment <code class="rounded bg-neutral-100 px-1 dark:bg-neutral-800">/codecrawler deep</code>
-      on a PR to override per-review. The global <code class="rounded bg-neutral-100 px-1 dark:bg-neutral-800">REVIEW_AGENT_MODE</code>
-      setting can force the static path regardless.
-    </p>
-    <div class="mt-3 grid gap-2 sm:grid-cols-3">
-      {#each DEPTH_TIERS as tier (tier)}
-        {@const disabled = depthDisabled(tier)}
-        <button
-          type="button"
-          onclick={() => saveDepth(tier)}
-          disabled={disabled || savingDepth}
-          aria-pressed={currentDepth === tier}
-          class="flex flex-col gap-1 rounded-lg border p-3 text-left text-sm transition disabled:cursor-not-allowed disabled:opacity-50 {currentDepth ===
-          tier
-            ? "border-brand-500 bg-brand-50 dark:bg-brand-950"
-            : "border-neutral-200 hover:border-neutral-300 dark:border-neutral-800 dark:hover:border-neutral-700"}"
-        >
-          <span class="flex items-center justify-between">
-            <span class="font-medium">{DEPTH_LABEL[tier]}</span>
-            {#if currentDepth === tier}
-              <span class="text-[10px] font-medium uppercase text-brand-600 dark:text-brand-400">current</span>
-            {/if}
-          </span>
-          <span class="text-xs text-neutral-500">{DEPTH_DESCRIPTION[tier]}</span>
-        </button>
-      {/each}
-    </div>
-  </div>
 
-  <GraphEditor teamId={data.teamId} graphType="pr_review" teamPlan={data.teamPlan} />
+    <GraphEditor teamId={data.teamId} graphType="pr_review" teamPlan={data.teamPlan} />
+  {/if}
 </section>

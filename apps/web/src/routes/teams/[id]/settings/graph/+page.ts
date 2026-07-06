@@ -9,5 +9,5 @@ export const load: PageLoad = async ({ params, fetch }) => {
     undefined,
     fetch,
   ).catch(() => null);
-  return { teamId: params.id, teamPlan: team.plan, profile } as const;
+  return { teamId: params.id, teamPlan: team.plan, teamRole: team.role, profile } as const;
 };

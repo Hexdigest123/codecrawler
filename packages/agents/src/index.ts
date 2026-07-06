@@ -1266,9 +1266,21 @@ async function postNode(state: State): Promise<Partial<State>> {
             body: `**[${f.severity}] ${normalizeCategory(f.category).replace("_", " ")}**: ${f.message}${f.suggestion ? `\n\nSuggestion: ${f.suggestion}` : ""}`,
           })),
         });
+        console.log(
+          `[agents] posted review to ${input.repo.owner}/${input.repo.name}#${input.prNumber}`,
+        );
       } catch (postErr) {
-        console.warn(`vcs postReview failed: ${errMsg(postErr)}`);
+        // The walkthrough was persisted to the DB above, but never reached
+        // the PR itself. Log loudly with identifying context — this was
+        // previously a bare warn and silently lost real failures.
+        console.warn(
+          `[agents] vcs postReview failed for ${input.repo.owner}/${input.repo.name}#${input.prNumber} (reviewId=${input.reviewId ?? "?"}): ${errMsg(postErr)}`,
+        );
       }
+    } else if (!failed && !input.auth) {
+      console.warn(
+        `[agents] skipped VCS post for ${input.repo.owner}/${input.repo.name}#${input.prNumber}: no auth`,
+      );
     }
 
     return { status: reviewStatus, billingMode, creditsCost, modelIds };

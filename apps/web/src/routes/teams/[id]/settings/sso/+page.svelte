@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invalidateAll } from "$app/navigation";
   import { ApiError, api } from "$lib/api";
+  import { confirm } from "$lib/confirm.svelte";
   import { toastError, toastSuccess } from "$lib/toast.svelte";
   import {
     PLAN_LABEL,
@@ -127,12 +128,14 @@
 
   async function remove() {
     if (!existing) return;
-    if (
-      !confirm(
+    const ok = await confirm({
+      title: "Remove SSO configuration",
+      message:
         "Remove this SSO configuration? Team members will sign in with email and password.",
-      )
-    )
-      return;
+      confirmLabel: "Remove SSO",
+      tone: "danger",
+    });
+    if (!ok) return;
     deleting = true;
     try {
       await api<{ ok: boolean }>(`/api/teams/${data.teamId}/sso`, {

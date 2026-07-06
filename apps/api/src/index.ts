@@ -789,7 +789,7 @@ async function getStoredVcsConnection(
   if (!conn?.accessToken) return null;
   try {
     return {
-      token: decryptSecret(conn.accessToken),
+      token: decryptSecret(conn.accessToken, { aad: "vcs:access_token" }),
       baseUrl: conn.baseUrl ?? null,
     };
   } catch {
@@ -1918,7 +1918,7 @@ app.post(
   async (c) => {
     const user = c.get("user");
     const orgId = c.req.param("id");
-    await requireOrgAccess(c, orgId, user.id);
+    await requireOrgAdmin(c, orgId, user.id);
     const body = c.req.valid("json");
     const [project] = await db
       .insert(schema.projects)
@@ -1933,6 +1933,38 @@ app.post(
     return c.json(project, 201);
   },
 );
+
+app.delete("/api/teams/:id/projects/:projectId", async (c) => {
+  const user = c.get("user");
+  const orgId = c.req.param("id");
+  const projectId = c.req.param("projectId");
+  await requireOrgAdmin(c, orgId, user.id);
+
+  const [existing] = await db
+    .select({ id: schema.projects.id, name: schema.projects.name })
+    .from(schema.projects)
+    .where(and(eq(schema.projects.id, projectId), eq(schema.projects.orgId, orgId)))
+    .limit(1);
+  if (!existing) {
+    throw new ApiError(404, "not_found", "Project not found");
+  }
+
+  await db.transaction(async (tx) => {
+    // Removing pull requests first cascades reviews/findings and clears the
+    // NO-ACTION profile_id references on agent_profiles.
+    await tx.delete(schema.pullRequests).where(eq(schema.pullRequests.projectId, projectId));
+    // Order matters: agent_profiles (project_id NO-ACTION) before projects.
+    await tx.delete(schema.agentProfiles).where(eq(schema.agentProfiles.projectId, projectId));
+    await tx.delete(schema.projects).where(eq(schema.projects.id, projectId));
+  });
+
+  await audit(orgId, user.id, "team.project_removed", {
+    projectId,
+    projectName: existing.name,
+  }).catch(() => undefined);
+
+  return c.json({ ok: true });
+});
 
 app.get("/api/teams/:id/api-keys", async (c) => {
   const user = c.get("user");
@@ -1968,9 +2000,15 @@ app.post(
   async (c) => {
     const user = c.get("user");
     const orgId = c.req.param("id");
-    await requireOrgAccess(c, orgId, user.id);
+    await requireOrgAdmin(c, orgId, user.id);
     const body = c.req.valid("json");
-    const encryptedKey = encryptSecret(body.key);
+    const encryptedKey = encryptSecret(body.key, { aad: "api_key" });
+    let status: "valid" | "invalid" = "invalid";
+    try {
+      status = (await verifyByokKey(body.provider, body.key)) ? "valid" : "invalid";
+    } catch {
+      status = "invalid";
+    }
     const [row] = await db
       .insert(schema.apiKeys)
       .values({
@@ -1978,7 +2016,8 @@ app.post(
         provider: body.provider,
         label: body.label,
         encryptedKey,
-        status: "unverified",
+        status,
+        lastVerifiedAt: new Date(),
       })
       .returning({
         id: schema.apiKeys.id,
@@ -1988,6 +2027,9 @@ app.post(
         lastVerifiedAt: schema.apiKeys.lastVerifiedAt,
         createdAt: schema.apiKeys.createdAt,
       });
+    await audit(orgId, user.id, "team.api_key_added", { provider: body.provider, status }).catch(
+      () => undefined,
+    );
     return c.json(row, 201);
   },
 );
@@ -1996,10 +2038,11 @@ app.delete("/api/teams/:id/api-keys/:provider", async (c) => {
   const user = c.get("user");
   const orgId = c.req.param("id");
   const provider = c.req.param("provider") as (typeof PROVIDER_VALUES)[number];
-  await requireOrgAccess(c, orgId, user.id);
+  await requireOrgAdmin(c, orgId, user.id);
   await db
     .delete(schema.apiKeys)
     .where(and(eq(schema.apiKeys.provider, provider), eq(schema.apiKeys.orgId, orgId)));
+  await audit(orgId, user.id, "team.api_key_removed", { provider }).catch(() => undefined);
   return c.json({ ok: true });
 });
 
@@ -2007,7 +2050,7 @@ app.post("/api/teams/:id/api-keys/:provider/verify", async (c) => {
   const user = c.get("user");
   const orgId = c.req.param("id");
   const provider = c.req.param("provider") as (typeof PROVIDER_VALUES)[number];
-  await requireOrgAccess(c, orgId, user.id);
+  await requireOrgAdmin(c, orgId, user.id);
   const [latest] = await db
     .select()
     .from(schema.apiKeys)
@@ -2019,7 +2062,7 @@ app.post("/api/teams/:id/api-keys/:provider/verify", async (c) => {
   }
   let ok = false;
   try {
-    const plaintext = decryptSecret(latest.encryptedKey);
+    const plaintext = decryptSecret(latest.encryptedKey, { aad: "api_key" });
     ok = await verifyByokKey(provider, plaintext);
   } catch {
     ok = false;
@@ -2097,7 +2140,7 @@ app.post(
   async (c) => {
     const user = c.get("user");
     const orgId = c.req.param("id");
-    await requireOrgAccess(c, orgId, user.id);
+    await requireOrgAdmin(c, orgId, user.id);
     const body = c.req.valid("json");
 
     const settings = await getAppSettings();
@@ -2131,7 +2174,7 @@ app.post(
 app.post("/api/teams/:id/billing/cancel", async (c) => {
   const user = c.get("user");
   const orgId = c.req.param("id");
-  await requireOrgAccess(c, orgId, user.id);
+  await requireOrgAdmin(c, orgId, user.id);
   await requirePlan(c, orgId, "plus");
 
   const [priorSub] = await db
@@ -2177,7 +2220,7 @@ app.post("/api/teams/:id/billing/cancel", async (c) => {
 app.post("/api/teams/:id/billing/sync", async (c) => {
   const user = c.get("user");
   const orgId = c.req.param("id");
-  await requireOrgAccess(c, orgId, user.id);
+  await requireOrgAdmin(c, orgId, user.id);
   const priorPlan = await getOrgPlan(orgId);
   try {
     const result = await recoverSubscription(orgId);
@@ -2222,7 +2265,7 @@ app.put(
   async (c) => {
     const user = c.get("user");
     const orgId = c.req.param("id");
-    await requireOrgAccess(c, orgId, user.id);
+    await requireOrgAdmin(c, orgId, user.id);
     const body = c.req.valid("json");
     const existing = await resolveOrgProfile(orgId, "pr_review");
     if (existing) {
@@ -2285,7 +2328,7 @@ app.put(
   async (c) => {
     const user = c.get("user");
     const orgId = c.req.param("id");
-    await requireOrgAccess(c, orgId, user.id);
+    await requireOrgAdmin(c, orgId, user.id);
     const rawKey = c.req.param("key");
     const PR_REVIEW_NODE_KEYS: Record<string, string> = {
       PLAN: "orchestrator",
@@ -2338,6 +2381,24 @@ app.get("/api/teams/:id/vcs-connections", async (c) => {
     .where(eq(schema.vcsConnections.orgId, orgId))
     .orderBy(desc(schema.vcsConnections.createdAt));
   return c.json(rows);
+});
+
+app.delete("/api/teams/:id/vcs-connections/:connectionId", async (c) => {
+  const user = c.get("user");
+  const orgId = c.req.param("id");
+  const connectionId = c.req.param("connectionId");
+  await requireOrgAdmin(c, orgId, user.id);
+  const result = await db
+    .delete(schema.vcsConnections)
+    .where(and(eq(schema.vcsConnections.id, connectionId), eq(schema.vcsConnections.orgId, orgId)))
+    .returning({ id: schema.vcsConnections.id, provider: schema.vcsConnections.provider });
+  if (result.length === 0) {
+    throw new ApiError(404, "not_found", "VCS connection not found");
+  }
+  await audit(orgId, user.id, "team.vcs_disconnected", { provider: result[0].provider }).catch(
+    () => undefined,
+  );
+  return c.json({ ok: true });
 });
 
 app.get("/api/teams/:id/vcs-repos", async (c) => {
@@ -2399,12 +2460,24 @@ app.post(
     if (!orgId) {
       throw new ApiError(400, "validation_error", "No team membership; specify orgId");
     }
-    await requireOrgAccess(c, orgId, user.id);
-    await db.insert(schema.vcsConnections).values({
-      orgId,
+    await requireOrgAdmin(c, orgId, user.id);
+    await db.transaction(async (tx) => {
+      await tx
+        .delete(schema.vcsConnections)
+        .where(
+          and(eq(schema.vcsConnections.orgId, orgId), eq(schema.vcsConnections.provider, provider)),
+        );
+      await tx.insert(schema.vcsConnections).values({
+        orgId,
+        provider,
+        kind: "oauth",
+        accessToken: encryptSecret(body.token, { aad: "vcs:access_token" }),
+        baseUrl: body.baseUrl ?? null,
+      });
+    });
+    await audit(orgId, user.id, "team.vcs_connected", {
       provider,
       kind: "oauth",
-      accessToken: encryptSecret(body.token),
       baseUrl: body.baseUrl ?? null,
     });
     return c.json({ ok: true }, 201);

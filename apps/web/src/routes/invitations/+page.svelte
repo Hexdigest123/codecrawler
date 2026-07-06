@@ -1,6 +1,7 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
   import { ApiError, api } from "$lib/api";
+  import { confirm } from "$lib/confirm.svelte";
   import { toastError } from "$lib/toast.svelte";
   import type { Invitation, MemberRole } from "$lib/types";
   import type { PageProps } from "./$types";
@@ -44,12 +45,13 @@
   }
 
   async function decline(inv: Invitation) {
-    if (
-      !confirm(
-        `Decline the invitation to ${inv.organizationName ?? "this team"}?`,
-      )
-    )
-      return;
+    const ok = await confirm({
+      title: "Decline invitation",
+      message: `Decline the invitation to ${inv.organizationName ?? "this team"}?`,
+      confirmLabel: "Decline",
+      tone: "default",
+    });
+    if (!ok) return;
     busyId = inv.id;
     try {
       await api<{ ok: boolean }>(`/api/invitations/${inv.id}/decline`, {

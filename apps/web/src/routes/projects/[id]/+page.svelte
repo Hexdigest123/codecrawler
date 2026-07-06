@@ -1,16 +1,18 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
+  import { untrack } from "svelte";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import GitPullRequest from "@lucide/svelte/icons/git-pull-request";
   import Loader from "@lucide/svelte/icons/loader-circle";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import { ApiError, api } from "$lib/api";
-  import type {
-    DepthTier,
-    OpenPullRequest,
-    ProjectReviewListItem,
-    TriggerReviewResponse,
+  import {
+    DEPTH_TIERS,
+    type DepthTier,
+    type OpenPullRequest,
+    type ProjectReviewListItem,
+    type TriggerReviewResponse,
   } from "$lib/types";
   import type { PageProps } from "./$types";
 
@@ -42,9 +44,14 @@
   let reviewingNumber = $state<number | null>(null);
   let reviewError = $state<{ n: number; msg: string } | null>(null);
   let freeByokOnly = $state(false);
-  // Depth applied to manually-triggered reviews. Defaults to the agentic quick
-  // tier; deep is plan-gated server-side (the error surfaces per-PR below).
-  let triggerDepth = $state<DepthTier>("quick");
+  // Depth applied to manually-triggered reviews. Seeds from the team's
+  // defaultDepth so the team default applies — the user can still override it
+  // per review via the selector. untrack: seed from the load snapshot rather
+  // than tracking it reactively. Falls back to "quick" when no team default is
+  // set.
+  let triggerDepth = $state<DepthTier>(
+    untrack(() => (data.defaultDepth as DepthTier | null | undefined) ?? "quick"),
+  );
 
   async function refreshOpen() {
     loadingOpen = true;
@@ -155,7 +162,7 @@
         aria-label="Review depth"
       >
         <span class="px-1.5 text-neutral-500">Depth</span>
-        {#each ["quick", "deep"] as tier (tier)}
+        {#each DEPTH_TIERS as tier (tier)}
           <button
             type="button"
             onclick={() => (triggerDepth = tier as DepthTier)}

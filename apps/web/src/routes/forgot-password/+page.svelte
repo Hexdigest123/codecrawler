@@ -1,7 +1,7 @@
 <script lang="ts">
   import { authClient } from "@codecrawler/auth/client";
   import Brand from "$lib/components/Brand.svelte";
-  import { toastError, toastSuccess } from "$lib/toast.svelte";
+  import { toastSuccess } from "$lib/toast.svelte";
 
   let email = $state("");
   let loading = $state(false);
@@ -21,12 +21,10 @@
       redirectTo,
     });
     loading = false;
-    if (err) {
-      toastError(err.message ?? "Could not send reset email.");
-      return;
-    }
-    // Better Auth always responds 200 (even for unknown emails) to prevent
-    // user enumeration, so treat every success identically.
+    if (err) console.warn("[forgot-password] request failed", err);
+    // Always show the same outcome to prevent user enumeration, whether the
+    // request errored or the email is unknown. Better Auth already returns 200
+    // for unknown emails server-side; this also covers network/client errors.
     submitted = true;
     toastSuccess("If an account exists, a reset link is on its way.");
   }

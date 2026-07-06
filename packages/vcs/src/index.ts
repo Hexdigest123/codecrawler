@@ -90,6 +90,40 @@ function mapStatus(status: GhStatus): DiffFileStatus {
   return "modified";
 }
 
+/**
+ * Retries a GitHub write on secondary-rate-limit (403/429) responses, honoring
+ * the Retry-After header (capped) with exponential backoff as a fallback. The
+ * postReview flow can issue two POSTs to /pulls/{n}/reviews in quick
+ * succession (full review -> body-only fallback), which regularly trips this
+ * limit; without retrying, the walkthrough never reaches the PR.
+ */
+async function withGitHubRateLimitRetry<T>(fn: () => Promise<T>, maxAttempts = 4): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      const e = err as { status?: number; message?: string };
+      const status = e?.status;
+      const isRateLimit =
+        status === 429 || (status === 403 && /secondary rate limit/i.test(e?.message ?? ""));
+      if (!isRateLimit) throw err;
+      const headers = (err as { response?: { headers?: Record<string, string> } })?.response
+        ?.headers;
+      const retryAfterRaw =
+        headers?.["retry-after"] ?? headers?.["Retry-After"] ?? headers?.["x-ratelimit-reset"];
+      const retryAfter = Number(retryAfterRaw);
+      const waitSec =
+        Number.isFinite(retryAfter) && retryAfter > 0
+          ? Math.min(60, retryAfter)
+          : Math.min(30, 2 ** attempt);
+      await new Promise((r) => setTimeout(r, waitSec * 1000));
+    }
+  }
+  throw lastErr;
+}
+
 export class GitHubProvider implements VCSProvider {
   private readonly octokit: Octokit;
 
@@ -166,19 +200,47 @@ export class GitHubProvider implements VCSProvider {
         : review.status === "request_changes"
           ? "REQUEST_CHANGES"
           : "COMMENT";
-    await this.octokit.pulls.createReview({
-      owner,
-      repo,
-      pull_number: n,
-      event,
-      body: review.summary,
-      comments: review.comments.map((c) => ({
-        path: c.path,
-        line: c.line,
-        side: c.side ?? "RIGHT",
-        body: c.body,
-      })),
-    });
+    const comments = review.comments.map((c) => ({
+      path: c.path,
+      line: c.line,
+      side: c.side ?? "RIGHT",
+      body: c.body,
+    }));
+    // GitHub's createReview submits the body and all inline comments in a
+    // single request — if any comment targets a line outside the diff hunks
+    // (which reviewer agents regularly produce), the whole call 422s and the
+    // walkthrough never reaches the PR. Mirror the GitLab/Gitea adapters by
+    // attempting the full review first, then falling back to a body-only
+    // review so the summary always lands.
+    if (comments.length > 0) {
+      try {
+        await withGitHubRateLimitRetry(() =>
+          this.octokit.pulls.createReview({
+            owner,
+            repo,
+            pull_number: n,
+            event,
+            body: review.summary,
+            comments,
+          }),
+        );
+        return;
+      } catch {
+        // Inline comments rejected (422) — retry below as a body-only review.
+        // Space out the second POST; issuing two content-creating requests to
+        // /pulls/{n}/reviews within ~1s trips GitHub's secondary rate limit.
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    }
+    await withGitHubRateLimitRetry(() =>
+      this.octokit.pulls.createReview({
+        owner,
+        repo,
+        pull_number: n,
+        event,
+        body: review.summary,
+      }),
+    );
   }
 
   async listRepos(): Promise<{ id: number; fullName: string; private: boolean }[]> {

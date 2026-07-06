@@ -1,10 +1,15 @@
 <script lang="ts">
   import { ApiError, api } from "$lib/api";
+  import { confirm } from "$lib/confirm.svelte";
   import { toastError, toastSuccess } from "$lib/toast.svelte";
   import type { PageProps } from "./$types";
   import type { VcsConnection } from "./+page";
 
   let { data }: PageProps = $props();
+
+  const isAdmin = $derived(
+    data.team?.role === "owner" || data.team?.role === "admin",
+  );
 
   const PROVIDERS = [
     { value: "github", label: "GitHub" },
@@ -57,6 +62,7 @@
   let token = $state("");
   let baseUrl = $state("");
   let adding = $state(false);
+  let busyConnectionId = $state<string | null>(null);
 
   const showBaseUrl = $derived(provider === "gitlab" || provider === "gitea");
   const baseUrlPlaceholder = $derived(
@@ -96,6 +102,26 @@
       adding = false;
     }
   }
+
+  async function removeConnection(conn: VcsConnection) {
+    const ok = await confirm({
+      title: "Remove connection",
+      message: `Remove the ${providerLabel(conn.provider)} connection?`,
+      confirmLabel: "Remove",
+      tone: "danger",
+    });
+    if (!ok) return;
+    busyConnectionId = conn.id;
+    try {
+      await api(`/api/teams/${data.teamId}/vcs-connections/${conn.id}`, { method: "DELETE" });
+      await refetchConnections();
+      toastSuccess(`${providerLabel(conn.provider)} connection removed.`);
+    } catch (err) {
+      toastError(err instanceof ApiError ? err.message : "Could not remove connection.");
+    } finally {
+      busyConnectionId = null;
+    }
+  }
 </script>
 
 <svelte:head>
@@ -114,63 +140,69 @@
 
   <section class="rounded-xl border border-neutral-200 p-5 dark:border-neutral-800">
     <h2 class="text-sm font-semibold uppercase tracking-wide text-neutral-500">Add a connection</h2>
-    <form class="mt-4 flex flex-col gap-4" onsubmit={addConnection} novalidate>
-      <label class="flex max-w-xs flex-col gap-1 text-sm">
-        <span class="font-medium">Provider</span>
-        <select
-          bind:value={provider}
-          class="input px-3 py-2"
-        >
-          {#each PROVIDERS as p (p.value)}
-            <option value={p.value}>{p.label}</option>
-          {/each}
-        </select>
-      </label>
-
-      <label class="flex flex-col gap-1 text-sm">
-        <span class="font-medium">Access token</span>
-        <input
-          type="password"
-          required
-          autocomplete="off"
-          bind:value={token}
-          class="input px-3 py-2"
-          placeholder="paste token"
-        />
-      </label>
-
-      {#if showBaseUrl}
-        <label class="flex flex-col gap-1 text-sm">
-          <span class="font-medium">Base URL</span>
-          <input
-            type="url"
-            required
-            bind:value={baseUrl}
+    {#if isAdmin}
+      <form class="mt-4 flex flex-col gap-4" onsubmit={addConnection} novalidate>
+        <label class="flex max-w-xs flex-col gap-1 text-sm">
+          <span class="font-medium">Provider</span>
+          <select
+            bind:value={provider}
             class="input px-3 py-2"
-            placeholder={baseUrlPlaceholder}
-          />
-          <span class="text-xs text-neutral-500">
-            The root URL of your self-hosted {providerLabel(provider)} instance. Leave empty for
-            {provider === "gitlab" ? " gitlab.com" : " the public host"}.
-          </span>
+          >
+            {#each PROVIDERS as p (p.value)}
+              <option value={p.value}>{p.label}</option>
+            {/each}
+          </select>
         </label>
-      {/if}
 
-      <p class="max-w-2xl text-xs text-neutral-500">
-        Paste a personal access (PAT) or team token with read access to pull/merge requests. Reviews
-        are posted back to the PR as a comment using this token.
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="font-medium">Access token</span>
+          <input
+            type="password"
+            required
+            autocomplete="off"
+            bind:value={token}
+            class="input px-3 py-2"
+            placeholder="paste token"
+          />
+        </label>
+
+        {#if showBaseUrl}
+          <label class="flex flex-col gap-1 text-sm">
+            <span class="font-medium">Base URL</span>
+            <input
+              type="url"
+              required
+              bind:value={baseUrl}
+              class="input px-3 py-2"
+              placeholder={baseUrlPlaceholder}
+            />
+            <span class="text-xs text-neutral-500">
+              The root URL of your self-hosted {providerLabel(provider)} instance. Leave empty for
+              {provider === "gitlab" ? " gitlab.com" : " the public host"}.
+            </span>
+          </label>
+        {/if}
+
+        <p class="max-w-2xl text-xs text-neutral-500">
+          Paste a personal access (PAT) or team token with read access to pull/merge requests. Reviews
+          are posted back to the PR as a comment using this token.
+        </p>
+
+        <div class="flex items-center gap-4">
+          <button
+            type="submit"
+            disabled={adding || !canSubmit}
+            class="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {adding ? "Connecting…" : "Add connection"}
+          </button>
+        </div>
+      </form>
+    {:else}
+      <p class="mt-4 text-sm text-neutral-600 dark:text-neutral-400">
+        Only team owners and admins can add or remove VCS connections.
       </p>
-
-      <div class="flex items-center gap-4">
-        <button
-          type="submit"
-          disabled={adding || !canSubmit}
-          class="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {adding ? "Connecting…" : "Add connection"}
-        </button>
-      </div>
-    </form>
+    {/if}
   </section>
 
   <section class="rounded-xl border border-neutral-200 p-5 dark:border-neutral-800">
@@ -189,7 +221,19 @@
               </span>
               <span class="text-sm text-neutral-500">{kindLabel(conn.kind)}</span>
             </div>
-            <span class="text-xs text-neutral-500">Added {formatDate(conn.createdAt)}</span>
+            <div class="flex items-center gap-3">
+              <span class="text-xs text-neutral-500">Added {formatDate(conn.createdAt)}</span>
+              {#if isAdmin}
+                <button
+                  type="button"
+                  onclick={() => removeConnection(conn)}
+                  disabled={busyConnectionId === conn.id}
+                  class="rounded-md border border-red-300 px-3 py-1 text-sm font-medium text-red-600 bg-white hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:bg-neutral-900 dark:hover:bg-red-950"
+                >
+                  {busyConnectionId === conn.id ? "…" : "Remove"}
+                </button>
+              {/if}
+            </div>
           </li>
         {/each}
       </ul>

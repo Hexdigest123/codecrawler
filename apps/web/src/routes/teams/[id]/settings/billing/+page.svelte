@@ -1,11 +1,16 @@
 <script lang="ts">
   import { invalidateAll } from "$app/navigation";
   import { ApiError, api } from "$lib/api";
+  import { confirm } from "$lib/confirm.svelte";
   import { toastError, toastSuccess } from "$lib/toast.svelte";
   import { PLAN_LABEL, type BillingDetail, type PlanId } from "$lib/types";
   import type { PageProps } from "./$types";
 
   let { data }: PageProps = $props();
+
+  const isAdmin = $derived(
+    data.team?.role === "owner" || data.team?.role === "admin",
+  );
 
   const billing = $derived<BillingDetail>(data.billing);
   const isFree = $derived(billing.plan === "free");
@@ -71,12 +76,14 @@
 
   async function downgrade() {
     if (busyPlan) return;
-    if (
-      !confirm(
+    const ok = await confirm({
+      title: "Downgrade to Free",
+      message:
         "Downgrade to the Free plan? Paid features end at the start of the next billing period.",
-      )
-    )
-      return;
+      confirmLabel: "Downgrade",
+      tone: "danger",
+    });
+    if (!ok) return;
     busyPlan = "free";
     try {
       await api<{ ok: boolean }>(`/api/teams/${data.teamId}/billing/cancel`, {
@@ -137,7 +144,7 @@
         card details never touch CodeCrawler.
       </p>
     </div>
-    {#if canSync}
+    {#if canSync && isAdmin}
       <div class="flex items-center gap-2">
         <button
           type="button"
@@ -234,7 +241,9 @@
         </ul>
 
         <div class="mt-6 flex flex-1 items-end">
-          {#if plan.isCurrent}
+          {#if !isAdmin}
+            <p class="text-xs text-neutral-500">Ask an admin to change the plan.</p>
+          {:else if plan.isCurrent}
             <button
               type="button"
               disabled

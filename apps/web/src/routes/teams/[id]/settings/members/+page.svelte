@@ -1,6 +1,7 @@
 <script lang="ts">
 import { goto } from "$app/navigation";
 import { ApiError, api } from "$lib/api";
+import { confirm } from "$lib/confirm.svelte";
 import { toastError, toastSuccess } from "$lib/toast.svelte";
 import { PLAN_LABEL, type Member, type MemberRole, type PlanId } from "$lib/types";
 import type { PageProps } from "./$types";
@@ -98,7 +99,13 @@ async function changeRole(member: Member, newRole: MemberRole) {
 }
 
 async function removeMember(member: Member) {
-  if (!confirm(`Remove ${member.name || member.email} from the team?`)) return;
+  const ok = await confirm({
+    title: "Remove member",
+    message: `Remove ${member.name || member.email} from the team?`,
+    confirmLabel: "Remove member",
+    tone: "danger",
+  });
+  if (!ok) return;
   busyUserId = member.userId;
   try {
     await api(`/api/teams/${data.teamId}/members/${member.userId}`, { method: "DELETE" });
@@ -111,12 +118,13 @@ async function removeMember(member: Member) {
 }
 
 async function leaveTeam() {
-  if (
-    !confirm(
-      "Leave this team? You will lose access to its projects and settings.",
-    )
-  )
-    return;
+  const ok = await confirm({
+    title: "Leave team",
+    message: "Leave this team? You will lose access to its projects and settings.",
+    confirmLabel: "Leave team",
+    tone: "danger",
+  });
+  if (!ok) return;
   busyUserId = currentUserId;
   try {
     await api(`/api/teams/${data.teamId}/members/${currentUserId}/leave`, {
