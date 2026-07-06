@@ -204,6 +204,19 @@ async function getAppSettings() {
   );
 }
 
+/**
+ * Billing is auto-disabled when any Mollie env key is missing. The DB-backed
+ * `paymentsEnabled` flag remains the admin's intent; this is the operator gate
+ * that overrides it when Mollie is not wired up (e.g. fresh dev install).
+ */
+function isMollieConfigured(): boolean {
+  return (
+    Boolean(env.MOLLIE_API_KEY?.trim()) &&
+    Boolean(env.MOLLIE_REDIRECT_URL?.trim()) &&
+    Boolean(env.MOLLIE_WEBHOOK_URL?.trim())
+  );
+}
+
 async function getAdminEmails(): Promise<string[]> {
   const rows = await db
     .select({ email: schema.user.email })
@@ -2144,7 +2157,7 @@ app.post(
     const body = c.req.valid("json");
 
     const settings = await getAppSettings();
-    if (!settings.paymentsEnabled) {
+    if (!settings.paymentsEnabled || !isMollieConfigured()) {
       throw new ApiError(
         403,
         "payments_disabled",
@@ -3413,7 +3426,7 @@ app.get("/api/signup-config", async (c) => {
   return c.json({
     signupMode: settings.signupMode,
     allowedDomains: settings.allowedDomains ?? [],
-    paymentsEnabled: settings.paymentsEnabled,
+    paymentsEnabled: settings.paymentsEnabled && isMollieConfigured(),
   });
 });
 
@@ -3429,6 +3442,7 @@ app.get("/api/admin/settings", async (c) => {
     signupMode: settings.signupMode,
     allowedDomains: settings.allowedDomains ?? [],
     paymentsEnabled: settings.paymentsEnabled,
+    mollieConfigured: isMollieConfigured(),
     updatedAt: settings.updatedAt,
   });
 });
@@ -3480,6 +3494,7 @@ app.patch(
       signupMode: updated?.signupMode ?? "open",
       allowedDomains: updated?.allowedDomains ?? [],
       paymentsEnabled: updated?.paymentsEnabled ?? true,
+      mollieConfigured: isMollieConfigured(),
       updatedAt: updated?.updatedAt ?? new Date(),
     });
   },
@@ -3553,7 +3568,8 @@ app.get("/api/admin/stats", async (c) => {
       pending: Number(pendingSignups?.total ?? 0),
     },
     signupMode: settings.signupMode,
-    paymentsEnabled: settings.paymentsEnabled,
+    paymentsEnabled: settings.paymentsEnabled && isMollieConfigured(),
+    mollieConfigured: isMollieConfigured(),
   });
 });
 

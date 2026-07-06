@@ -218,12 +218,24 @@ function formatDate(iso?: string | null): string {
     aria-label="Payment availability"
   >
     <h2 class="text-sm font-semibold uppercase tracking-wide text-neutral-500">Payments</h2>
+    {#if !config.mollieConfigured}
+      <p
+        role="status"
+        class="mt-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200"
+      >
+        Billing is auto-disabled because Mollie is not configured. Set
+        <code>MOLLIE_API_KEY</code>, <code>MOLLIE_REDIRECT_URL</code>, and
+        <code>MOLLIE_WEBHOOK_URL</code> in the server environment to enable paid plans.
+      </p>
+    {/if}
     <div class="mt-4 flex flex-wrap items-center justify-between gap-4">
       <div>
         <p class="font-medium">
           Paid plan checkout is currently
           <span class="font-semibold">
-            {config.paymentsEnabled ? "enabled" : "disabled"}
+            {config.paymentsEnabled && config.mollieConfigured !== false
+              ? "enabled"
+              : "disabled"}
           </span>.
         </p>
         <p class="mt-1 max-w-xl text-sm text-neutral-600 dark:text-neutral-400">
