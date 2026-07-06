@@ -407,6 +407,7 @@ export interface SignupConfig {
   signupMode: SignupMode;
   allowedDomains: string[];
   paymentsEnabled: boolean;
+  mollieConfigured?: boolean;
 }
 
 export interface AdminStats {
@@ -417,6 +418,7 @@ export interface AdminStats {
   signups: { pending: number };
   signupMode: SignupMode;
   paymentsEnabled: boolean;
+  mollieConfigured?: boolean;
 }
 
 export interface AdminUser {
