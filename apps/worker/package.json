@@ -18,7 +18,7 @@
     "@codecrawler/billing": "workspace:*",
     "bullmq": "^5.79.0",
     "ioredis": "^5.11.0",
-    "drizzle-orm": "^0.38.0"
+    "drizzle-orm": "^0.45.2"
   },
   "devDependencies": {
     "@types/bun": "^1.3.0",

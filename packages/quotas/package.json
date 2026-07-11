@@ -13,7 +13,7 @@
   "dependencies": {
     "@codecrawler/db": "workspace:*",
     "@codecrawler/shared": "workspace:*",
-    "drizzle-orm": "^0.38.0"
+    "drizzle-orm": "^0.45.2"
   },
   "devDependencies": {
     "typescript": "^5.9.0"
