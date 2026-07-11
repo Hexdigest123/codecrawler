@@ -25,9 +25,7 @@ export function confirm(message: string): Promise<boolean>;
 export function confirm(options: ConfirmOptions): Promise<boolean>;
 export function confirm(messageOrOptions: string | ConfirmOptions): Promise<boolean> {
   const options: ConfirmOptions =
-    typeof messageOrOptions === "string"
-      ? { message: messageOrOptions }
-      : messageOrOptions;
+    typeof messageOrOptions === "string" ? { message: messageOrOptions } : messageOrOptions;
   const request: ConfirmRequest = {
     id: ++nextId,
     title: options.title ?? "Please confirm",
