@@ -12,7 +12,6 @@
   },
   "dependencies": {
     "@gitbeaker/rest": "^43.8.0",
-    "@octokit/auth-app": "^8.0.0",
     "@octokit/rest": "^22.0.0",
     "@octokit/webhooks": "^14.0.0"
   },

@@ -1,19 +1,20 @@
 <script lang="ts">
-import { goto } from "$app/navigation";
-import ArrowLeft from "@lucide/svelte/icons/arrow-left";
-import { ApiError, api } from "$lib/api";
-import type { PageProps } from "./$types";
+  import { goto } from "$app/navigation";
+  import ArrowLeft from "@lucide/svelte/icons/arrow-left";
+  import { ApiError, api } from "$lib/api";
+  import { toastError } from "$lib/toast.svelte";
+  import type { PageProps } from "./$types";
 
-type RepoItem = { id: number; fullName: string; private: boolean };
-type ReposResponse = { items: RepoItem[]; connected: boolean };
+  type RepoItem = { id: number; fullName: string; private: boolean };
+  type ReposResponse = { items: RepoItem[]; connected: boolean };
 
-let { params }: PageProps = $props();
+  let { params }: PageProps = $props();
 
-let name = $state("");
-let repoFullName = $state("");
-let provider = $state("github");
-let error = $state<string | null>(null);
-let loading = $state(false);
+  let name = $state("");
+  let repoFullName = $state("");
+  let provider = $state("github");
+  let pollingEnabled = $state(false);
+  let loading = $state(false);
 
 const PROVIDER_LABEL: Record<string, string> = {
   github: "GitHub",
@@ -72,27 +73,27 @@ function onRepoSelect(event: Event) {
   if (name.trim().length === 0) name = seg;
 }
 
-async function submit(event: SubmitEvent) {
-  event.preventDefault();
-  if (disabled) return;
-  error = null;
-  loading = true;
-  try {
-    await api(`/api/teams/${params.id}/projects`, {
-      method: "POST",
-      body: JSON.stringify({
-        name: name.trim(),
-        provider,
-        repoFullName: repoFullName.trim(),
-      }),
-    });
-    await goto(`/teams/${params.id}`);
-  } catch (err) {
-    error = err instanceof ApiError ? err.message : "Could not connect repository.";
-  } finally {
-    loading = false;
+  async function submit(event: SubmitEvent) {
+    event.preventDefault();
+    if (disabled) return;
+    loading = true;
+    try {
+      await api(`/api/teams/${params.id}/projects`, {
+        method: "POST",
+        body: JSON.stringify({
+          name: name.trim(),
+          provider,
+          repoFullName: repoFullName.trim(),
+          pollingEnabled,
+        }),
+      });
+      await goto(`/teams/${params.id}`);
+    } catch (err) {
+      toastError(err instanceof ApiError ? err.message : "Could not connect repository.");
+    } finally {
+      loading = false;
+    }
   }
-}
 </script>
 
 <svelte:head>
@@ -187,9 +188,20 @@ async function submit(event: SubmitEvent) {
       </label>
     {/if}
 
-    {#if error}
-      <p role="alert" class="text-sm text-red-600 dark:text-red-400">{error}</p>
-    {/if}
+    <label class="flex items-start gap-3 text-sm">
+      <input
+        type="checkbox"
+        bind:checked={pollingEnabled}
+        class="mt-0.5 size-4 rounded border-neutral-300 text-brand-600 focus:ring-brand-500 dark:border-neutral-600"
+      />
+      <span>
+        <span class="font-medium">Poll for new pull requests</span>
+        <span class="block text-xs text-neutral-500">
+          Periodically check for open PRs and review new ones automatically.
+          Uses this team's {PROVIDER_LABEL[provider] ?? provider} connection.
+        </span>
+      </span>
+    </label>
 
     <button
       type="submit"

@@ -1,35 +1,29 @@
 <script lang="ts">
-import { goto } from "$app/navigation";
-import { ApiError, api } from "$lib/api";
+  import { goto } from "$app/navigation";
+  import { ApiError, api } from "$lib/api";
+  import { toastError } from "$lib/toast.svelte";
 
-let name = $state("");
-let slug = $state("");
-let error = $state<string | null>(null);
-let loading = $state(false);
+  let name = $state("");
+  let loading = $state(false);
 
-let disabled = $derived(loading || name.trim().length === 0);
+  let disabled = $derived(loading || name.trim().length === 0);
 
-async function submit(event: SubmitEvent) {
-  event.preventDefault();
-  if (disabled) return;
-  error = null;
-  loading = true;
-  const payload: { name: string; slug?: string } = { name: name.trim() };
-  if (slug.trim().length > 0) {
-    payload.slug = slug.trim();
+  async function submit(event: SubmitEvent) {
+    event.preventDefault();
+    if (disabled) return;
+    loading = true;
+    try {
+      const team = await api<{ id: string }>("/api/teams", {
+        method: "POST",
+        body: JSON.stringify({ name: name.trim() }),
+      });
+      await goto(`/teams/${team.id}`);
+    } catch (err) {
+      toastError(err instanceof ApiError ? err.message : "Could not create team.");
+    } finally {
+      loading = false;
+    }
   }
-  try {
-    const team = await api<{ id: string }>("/api/teams", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    await goto(`/teams/${team.id}`);
-  } catch (err) {
-    error = err instanceof ApiError ? err.message : "Could not create team.";
-  } finally {
-    loading = false;
-  }
-}
 </script>
 
 <svelte:head>
@@ -54,22 +48,6 @@ async function submit(event: SubmitEvent) {
         placeholder="Acme Engineering"
       />
     </label>
-
-    <label class="flex flex-col gap-1 text-sm">
-      <span class="font-medium">Slug (optional)</span>
-      <input
-        type="text"
-        name="slug"
-        bind:value={slug}
-        class="input px-3 py-2"
-        placeholder="acme-eng"
-      />
-      <span class="text-xs text-neutral-500">Left blank, we'll derive one from the name.</span>
-    </label>
-
-    {#if error}
-      <p role="alert" class="text-sm text-red-600 dark:text-red-400">{error}</p>
-    {/if}
 
     <button
       type="submit"

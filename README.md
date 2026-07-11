@@ -99,7 +99,7 @@ production topology lives in `docker-compose.prod.yml` + `Caddyfile`.
 | -------- | ---------------------- | ----------------- | -------------------- | ---- |
 | `db`     | `postgres:18-alpine`   | 5432              | `127.0.0.1:5432` (admin only) | Postgres 18 data store |
 | `redis`  | `redis:7-alpine`       | 6379              | — (internal)         | BullMQ queues + cache |
-| `api`    | `apps/api/Dockerfile`  | 3001              | — (internal)         | Hono REST + Better Auth + webhooks |
+| `api`    | `apps/api/Dockerfile`  | 3001              | — (internal)         | Hono REST + Better Auth + payments |
 | `worker` | `apps/worker/Dockerfile` | —               | — (internal)         | BullMQ workers, LangGraph |
 | `web`    | `apps/web/Dockerfile`  | 3000              | — (internal)         | SvelteKit (adapter-node) dashboard |
 | `caddy`  | `caddy:2-alpine`       | 80, 443           | `80:80`, `443:443`   | Edge proxy, auto-TLS, routing |
@@ -111,8 +111,7 @@ Dockerfile can copy the workspace packages + root lockfile.
 ### Caddy routes
 
 - `https://codecrawler.merckel.dev/api/*` → `api:3001` — REST, Better Auth
-  (`/api/auth/*`), GitHub/GitLab/Gitea webhooks (`/api/webhooks/*`), and the
-  Mollie webhook (`/api/payments/webhook`).
+  (`/api/auth/*`), and the Mollie webhook (`/api/payments/webhook`).
 - `https://codecrawler.merckel.dev/*` (everything else) → `web:3000` — SvelteKit
   SSR + static assets. Relative `/api` calls from the browser resolve on the same
   origin, so no CORS gymnastics in prod.
@@ -120,7 +119,7 @@ Dockerfile can copy the workspace packages + root lockfile.
   and `Referrer-Policy`, and is `gzip`/`zstd`-encoded. Access logs go to stdout
   (`podman logs codecrawler-caddy`).
 - A commented `api.codecrawler.merckel.dev` site block in `Caddyfile` is available
-  if you prefer a dedicated API/webhook subdomain.
+  if you prefer a dedicated API subdomain.
 
 ### Configure the environment
 
@@ -138,7 +137,6 @@ differ from `.env.example` dev defaults):
 | `PUBLIC_WEB_URL` / `PUBLIC_API_URL` / `PUBLIC_SITE_URL` | `http://localhost:...` | `https://codecrawler.merckel.dev` |
 | `BETTER_AUTH_URL` | `http://localhost:3001` | `https://codecrawler.merckel.dev` |
 | `CORS_ORIGIN` | `http://localhost:5173` | `https://codecrawler.merckel.dev` |
-| `WEBHOOK_PUBLIC_URL` | `http://localhost:3001` | `https://codecrawler.merckel.dev` |
 | `MOLLIE_API_KEY` | `test_REPLACE_ME` | test key pre-go-live; live key (`live_...`) at go-live |
 | `MOLLIE_REDIRECT_URL` / `MOLLIE_WEBHOOK_URL` | localhost / placeholder | `https://codecrawler.merckel.dev/...` |
 | `SMTP_*` | Mailpit (`127.0.0.1:1025`) | real transactional SMTP |
@@ -158,9 +156,11 @@ Generate strong values for:
 - `TOKEN_ENCRYPTION_KEY` — AES-GCM key for BYOK/VCS tokens
   (`openssl rand -base64 32`). Rotating it invalidates all encrypted tokens.
 - `OPENROUTER_API_KEY` — the platform/hosted metering key.
-- GitHub App: `GH_APP_ID`, `GH_APP_PRIVATE_KEY`, `GH_APP_CLIENT_ID`,
-  `GH_APP_CLIENT_SECRET`, `GH_WEBHOOK_SECRET` (plus `GITLAB_WEBHOOK_SECRET` /
-  `GITEA_WEBHOOK_SECRET` when those providers are in use).
+- `INTERNAL_API_KEY` — shared secret protecting the internal poll endpoint
+  (`openssl rand -hex 32`). Required to enable PR polling.
+- VCS access — teams connect personal access tokens (PAT) per provider in
+  **Settings → VCS**; no GitHub App or server-side PAT needed. New PRs are
+  discovered via per-project polling (no inbound webhooks).
 - `MOLLIE_API_KEY` — keep the **test** key until go-live, then switch to the
   **live** (`live_...`) key; no code change required.
 
@@ -332,11 +332,6 @@ bun run db:seed
   (Verify after rotating). No server env change needed — SAIA is team-BYOK.
 - `MOLLIE_API_KEY` — swap in the Mollie dashboard, update `.env`, restart;
   old key stays valid until revoked.
-- Webhook secrets (`GH_WEBHOOK_SECRET`, `GITLAB_WEBHOOK_SECRET`,
-  `GITEA_WEBHOOK_SECRET`) — update the secret at the provider AND in `.env`,
-  then restart; mismatches cause webhooks to be rejected (`status: ignored`).
-- GitHub App credentials (`GH_APP_*`) — re-install the App and rotate the PEM;
-  update `.env` and restart.
 
 Apply any `.env` change with:
 `podman compose -f docker-compose.prod.yml up -d --force-recreate api worker`.

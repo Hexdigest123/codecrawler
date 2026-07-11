@@ -4,6 +4,7 @@
   import GitPullRequest from "@lucide/svelte/icons/git-pull-request";
   import { api } from "$lib/api";
   import { renderMarkdown } from "$lib/markdown";
+  import { toastError } from "$lib/toast.svelte";
   import type {
     Diff,
     DiffFile,
@@ -15,7 +16,7 @@
   let { data }: PageProps = $props();
 
   let override = $state<ReviewResponse | null>(null);
-  let pollError = $state<string | null>(null);
+  let pollErrorNotified = false;
 
   const detail = $derived(override ?? data.detail);
   const review = $derived(detail.review);
@@ -48,6 +49,14 @@
     hosted: "bg-brand-50 text-brand-600",
     mixed: "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
   };
+
+  const depthStyles: Record<string, string> = {
+    static: "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300",
+    quick: "bg-violet-50 text-violet-700 dark:bg-violet-950 dark:text-violet-300",
+    deep: "bg-fuchsia-50 text-fuchsia-700 dark:bg-fuchsia-950 dark:text-fuchsia-300",
+  };
+
+  const isAgentic = $derived(review.depth === "quick" || review.depth === "deep");
 
   const isRunning = $derived(
     review.status === "running" || review.status === "pending" || review.status === "queued",
@@ -90,8 +99,12 @@
     const handle = setInterval(async () => {
       try {
         override = await api<ReviewResponse>(`/api/reviews/${id}`);
+        pollErrorNotified = false;
       } catch (err) {
-        pollError = err instanceof Error ? err.message : "Failed to refresh review.";
+        if (!pollErrorNotified) {
+          pollErrorNotified = true;
+          toastError(err instanceof Error ? err.message : "Failed to refresh review.");
+        }
       }
     }, 2500);
     return () => clearInterval(handle);
@@ -193,6 +206,14 @@
             {review.billingMode}
           </span>
         {/if}
+        {#if review.depth && review.depth !== "static"}
+          <span
+            class={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${depthStyles[review.depth] ?? depthStyles.static}`}
+            title="Agentic review tier (tool-calling agent loop)"
+          >
+            {review.depth} agent
+          </span>
+        {/if}
       </div>
       <p class="mt-1 text-xs text-neutral-500">
         {#if pullRequest?.author}by {pullRequest.author} · {/if}
@@ -222,6 +243,12 @@
       <dd class="font-medium">{review.creditsCost ?? "0"}</dd>
       <dt class="text-neutral-500">Token spend</dt>
       <dd class="font-medium">${Number(review.tokenSpendUsd ?? 0).toFixed(4)}</dd>
+      {#if isAgentic}
+        <dt class="text-neutral-500">Agent steps</dt>
+        <dd class="font-medium">{review.agentSteps ?? 0}</dd>
+        <dt class="text-neutral-500">Tool calls</dt>
+        <dd class="font-medium">{review.toolCalls ?? 0}</dd>
+      {/if}
     </dl>
   </header>
 
@@ -232,9 +259,6 @@
     >
       Review in progress. This page will refresh automatically.
     </p>
-  {/if}
-  {#if pollError}
-    <p role="alert" class="text-sm text-red-600 dark:text-red-400">{pollError}</p>
   {/if}
 
   {#if review.modelIds && review.modelIds.length > 0}

@@ -15,3 +15,10 @@ export async function requireSession(): Promise<SessionUser> {
   }
   return { id: user.id, email: user.email, name: user.name };
 }
+
+export async function redirectIfAuthenticated(destination = "/dashboard"): Promise<void> {
+  const { data: session } = await authClient.getSession();
+  if (session?.user) {
+    throw redirect(302, destination);
+  }
+}

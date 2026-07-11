@@ -1,5 +1,22 @@
 export type PlanId = "free" | "plus" | "pro";
 
+/** Agentic review depth tier (mirrors @codecrawler/shared DepthTier). */
+export type DepthTier = "static" | "quick" | "deep";
+
+export const DEPTH_TIERS: DepthTier[] = ["static", "quick", "deep"];
+
+export const DEPTH_LABEL: Record<DepthTier, string> = {
+  static: "Static",
+  quick: "Quick",
+  deep: "Deep",
+};
+
+export const DEPTH_DESCRIPTION: Record<DepthTier, string> = {
+  static: "Single-shot review (no tools). Cheapest.",
+  quick: "Agentic ReAct loop with read-only repo tools (≤6 steps).",
+  deep: "Full agentic exploration (≤12 steps). Plus/Pro only.",
+};
+
 export const PLAN_RANK: Record<PlanId, number> = {
   free: 0,
   plus: 1,
@@ -44,8 +61,47 @@ export interface TeamMembership {
 
 export interface MeResponse {
   user: User;
+  role?: string;
+  status?: string;
   teams: TeamMembership[];
 }
+
+export type NotificationCategoryKey = "reviews" | "teams" | "billing" | "integrations";
+
+export type NotificationSettings = Record<NotificationCategoryKey, boolean>;
+
+export interface NotificationSettingsResponse {
+  settings: NotificationSettings;
+}
+
+export interface NotificationCategoryMeta {
+  key: NotificationCategoryKey;
+  label: string;
+  description: string;
+}
+
+export const NOTIFICATION_CATEGORIES: NotificationCategoryMeta[] = [
+  {
+    key: "reviews",
+    label: "Reviews",
+    description: "Review completions, failures, and digests for your pull requests.",
+  },
+  {
+    key: "teams",
+    label: "Teams & collaboration",
+    description: "Team invitations, membership changes, and role updates.",
+  },
+  {
+    key: "billing",
+    label: "Billing & quota",
+    description: "Subscriptions, payments, plan changes, and quota warnings.",
+  },
+  {
+    key: "integrations",
+    label: "Integrations",
+    description: "VCS connections: app installs/uninstalls, broken or expired tokens.",
+  },
+];
 
 export interface UsageState {
   used: number;
@@ -96,6 +152,8 @@ export interface NodeModels {
 export interface AgentProfile {
   id?: string;
   nodeModels: NodeModels;
+  coverageStrategy?: string | null;
+  defaultDepth?: DepthTier | null;
 }
 
 export type ApiKeyStatus = "valid" | "invalid" | "unverified";
@@ -155,6 +213,9 @@ export interface Review {
   status: string;
   walkthrough?: string | null;
   billingMode?: string | null;
+  depth?: DepthTier | null;
+  agentSteps?: number | null;
+  toolCalls?: number | null;
   creditsCost?: string | number;
   tokenSpendUsd?: string | number;
   modelIds?: string[] | null;
@@ -275,12 +336,54 @@ export interface Invitation {
   expiresAt: string;
 }
 
-export type SsoProvider = "saml" | "oidc";
+// Backed by Better Auth's SSO plugin (`@better-auth/sso`). The admin form
+// collects a small subset and the API maps it to the plugin's native shape; the
+// GET response is the plugin's redacted provider view plus a derived protocol.
+export type SsoProtocol = "saml" | "oidc";
 
-export interface SsoConfig {
+export interface SsoProviderDetail {
+  providerId: string;
+  issuer: string;
   domain: string;
-  providerId: SsoProvider;
-  config: Record<string, unknown>;
+  organizationId: string | null;
+  protocol: SsoProtocol | null;
+  oidcConfig?: {
+    discoveryEndpoint: string;
+    clientIdLastFour: string;
+    pkce: boolean;
+    scopes?: string[];
+    authorizationEndpoint?: string;
+    tokenEndpoint?: string;
+    userInfoEndpoint?: string;
+    jwksEndpoint?: string;
+  } | null;
+  samlConfig?: {
+    entryPoint: string;
+    callbackUrl: string;
+    audience?: string;
+    wantAssertionsSigned?: boolean;
+    authnRequestsSigned?: boolean;
+    signatureAlgorithm?: string;
+    digestAlgorithm?: string;
+    certificate?:
+      | {
+          fingerprintSha256: string;
+          notBefore: string;
+          notAfter: string;
+          publicKeyAlgorithm: string;
+        }
+      | { error: string }
+      | null;
+  } | null;
+  spMetadataUrl?: string;
+}
+
+// Shape of the form payload POSTed to /api/teams/:id/sso.
+export interface SsoFormPayload {
+  domain: string;
+  protocol: SsoProtocol;
+  saml?: { entryURL: string; entityId: string; certificate?: string };
+  oidc?: { clientId: string; issuerUrl: string; clientSecret?: string; scopes?: string };
 }
 
 export interface AuditEntry {
@@ -288,5 +391,75 @@ export interface AuditEntry {
   action: string;
   actorUserId?: string;
   metadata?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export type SignupMode = "open" | "closed" | "domain_restricted" | "approval";
+
+export const SIGNUP_MODE_LABEL: Record<SignupMode, string> = {
+  open: "Open",
+  closed: "Closed",
+  domain_restricted: "Domain-restricted",
+  approval: "Approval queue",
+};
+
+export interface SignupConfig {
+  signupMode: SignupMode;
+  allowedDomains: string[];
+  paymentsEnabled: boolean;
+  mollieConfigured?: boolean;
+}
+
+export interface AdminStats {
+  users: { total: number; admins: number; active: number; pending: number; denied: number };
+  teams: { total: number };
+  reviews: { total: number; byStatus: Record<string, number> };
+  tokens: { spendUsd: number; credits: number; usageCredits: number };
+  signups: { pending: number };
+  signupMode: SignupMode;
+  paymentsEnabled: boolean;
+  mollieConfigured?: boolean;
+}
+
+export interface AdminUser {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  status: string;
+  emailVerified: boolean;
+  createdAt: string;
+}
+
+export interface SignupRequestRow {
+  id: string;
+  userId: string;
+  email: string;
+  name: string | null;
+  status: string;
+  denialReason: string | null;
+  decidedBy: string | null;
+  decidedAt: string | null;
+  createdAt: string;
+}
+
+export interface AdminTeam {
+  id: string;
+  name: string;
+  slug: string | null;
+  createdAt: string;
+  plan: PlanId;
+  status: string;
+  members: number;
+  reviews: number;
+  tokenSpendUsd: number;
+  credits: number;
+}
+
+export interface PasskeyRow {
+  id: string;
+  name: string | null;
+  deviceType: string;
+  backedUp: boolean;
   createdAt: string;
 }

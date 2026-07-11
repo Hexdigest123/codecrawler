@@ -1,3 +1,4 @@
+export * from "./admin";
 export * from "./agent_profiles";
 export * from "./api_keys";
 export * from "./audit_log";
@@ -5,11 +6,13 @@ export * from "./auth";
 export * from "./billing";
 export * from "./enums";
 export * from "./model_weights";
+export * from "./notifications";
 export * from "./projects";
 export * from "./reviews";
 export * from "./usage";
 export * from "./vcs";
 
+import type { appSettings, signupRequests } from "./admin";
 import type { agentProfiles } from "./agent_profiles";
 import type { apiKeys } from "./api_keys";
 import type { auditLog } from "./audit_log";
@@ -18,13 +21,16 @@ import type {
   invitation,
   member,
   organization,
+  passkey,
   session,
-  sso,
+  ssoProvider,
+  twoFactor,
   user,
   verification,
 } from "./auth";
 import type { teamSubscriptions } from "./billing";
 import type { modelWeights } from "./model_weights";
+import type { notificationSettings } from "./notifications";
 import type { projects } from "./projects";
 import type { pullRequests, reviewFindings, reviews } from "./reviews";
 import type { usage } from "./usage";
@@ -44,8 +50,12 @@ export type Member = typeof member.$inferSelect;
 export type NewMember = typeof member.$inferInsert;
 export type Invitation = typeof invitation.$inferSelect;
 export type NewInvitation = typeof invitation.$inferInsert;
-export type SSO = typeof sso.$inferSelect;
-export type NewSSO = typeof sso.$inferInsert;
+export type SsoProvider = typeof ssoProvider.$inferSelect;
+export type NewSsoProvider = typeof ssoProvider.$inferInsert;
+export type TwoFactor = typeof twoFactor.$inferSelect;
+export type NewTwoFactor = typeof twoFactor.$inferInsert;
+export type Passkey = typeof passkey.$inferSelect;
+export type NewPasskey = typeof passkey.$inferInsert;
 export type TeamSubscription = typeof teamSubscriptions.$inferSelect;
 export type NewTeamSubscription = typeof teamSubscriptions.$inferInsert;
 export type Project = typeof projects.$inferSelect;
@@ -66,5 +76,11 @@ export type ApiKey = typeof apiKeys.$inferSelect;
 export type NewApiKey = typeof apiKeys.$inferInsert;
 export type ModelWeight = typeof modelWeights.$inferSelect;
 export type NewModelWeight = typeof modelWeights.$inferInsert;
+export type NotificationSettingsRecord = typeof notificationSettings.$inferSelect;
+export type NewNotificationSettingsRecord = typeof notificationSettings.$inferInsert;
 export type AuditLog = typeof auditLog.$inferSelect;
 export type NewAuditLog = typeof auditLog.$inferInsert;
+export type AppSettings = typeof appSettings.$inferSelect;
+export type NewAppSettings = typeof appSettings.$inferInsert;
+export type SignupRequest = typeof signupRequests.$inferSelect;
+export type NewSignupRequest = typeof signupRequests.$inferInsert;

@@ -1,4 +1,5 @@
 import type { ApiKeyProvider, ProviderId } from "@codecrawler/shared";
+import { WEIGHT_MIN } from "./weight";
 
 export const SAIA_BASE_URL = "https://chat-ai.academiccloud.de/v1";
 export const SAIA_PREFIX = "saia/";
@@ -113,11 +114,8 @@ export function saiaVendorFromId(apiModelId: string): string {
   return "SAIA";
 }
 
-export function saiaWeightForModel(paramB: number): number {
-  if (paramB >= 300) return 4;
-  if (paramB >= 60) return 3;
-  if (paramB >= 20) return 2;
-  return 1;
+export function saiaWeightForModel(_paramB: number): number {
+  return WEIGHT_MIN;
 }
 
 export interface SaiaKnownModel {
@@ -127,8 +125,10 @@ export interface SaiaKnownModel {
   paramB: number;
 }
 
-// Fallback list used only when a team has no live SAIA key (display-only).
-// With a valid SAIA key the catalog is fetched live from /v1/models.
+// Fallback list used only when a team has a valid SAIA key but the live
+// /v1/models fetch is unreachable. With a reachable endpoint the catalog is
+// fetched live. SAIA has no hosted (metered) routing, so without a team key
+// none of these models are surfaced in the catalog.
 export const SAIA_KNOWN_MODELS: readonly SaiaKnownModel[] = [
   { id: "meta-llama-3.1-8b-instruct", name: "Llama 3.1 8B Instruct", vendor: "Meta", paramB: 8 },
   { id: "teuken-7b-instruct-research", name: "Teuken 7B Research", vendor: "Teuken", paramB: 7 },

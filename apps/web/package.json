@@ -10,13 +10,16 @@
     "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
+    "@better-auth/sso": "^1.6.23",
     "@codecrawler/auth": "workspace:*",
     "@lucide/svelte": "^1.22.0",
     "@xyflow/svelte": "^1.6.1",
-    "better-auth": "^1.6.0",
+    "better-auth": "^1.6.23",
     "dagre": "^0.8.5",
     "dompurify": "^3.4.11",
-    "marked": "^18.0.5"
+    "gsap": "^3.15.0",
+    "marked": "^18.0.5",
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "@sveltejs/adapter-node": "^5.5.0",
@@ -25,6 +28,7 @@
     "@tailwindcss/vite": "^4.3.0",
     "@types/dagre": "^0.7.54",
     "@types/dompurify": "^3.2.0",
+    "@types/qrcode": "^1.5.6",
     "svelte": "^5.56.0",
     "svelte-check": "^4.7.0",
     "tailwindcss": "^4.3.0",

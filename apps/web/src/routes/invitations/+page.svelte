@@ -1,69 +1,69 @@
 <script lang="ts">
-import { goto } from "$app/navigation";
-import { ApiError, api } from "$lib/api";
-import type { Invitation, MemberRole } from "$lib/types";
-import type { PageProps } from "./$types";
+  import { goto } from "$app/navigation";
+  import { ApiError, api } from "$lib/api";
+  import { confirm } from "$lib/confirm.svelte";
+  import { toastError } from "$lib/toast.svelte";
+  import type { Invitation, MemberRole } from "$lib/types";
+  import type { PageProps } from "./$types";
 
-let { data }: PageProps = $props();
+  let { data }: PageProps = $props();
 
-let invitationsOverride = $state<Invitation[] | null>(null);
-const invitations = $derived<Invitation[]>(
-  invitationsOverride ?? data.invitations ?? [],
-);
+  let invitationsOverride = $state<Invitation[] | null>(null);
+  const invitations = $derived<Invitation[]>(
+    invitationsOverride ?? data.invitations ?? [],
+  );
 
-let busyId = $state<string | null>(null);
-let error = $state<string | null>(null);
+  let busyId = $state<string | null>(null);
 
-function roleLabel(role: MemberRole): string {
-  return role.charAt(0).toUpperCase() + role.slice(1);
-}
-
-function formatDate(iso?: string): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-}
-
-async function accept(inv: Invitation) {
-  busyId = inv.id;
-  error = null;
-  try {
-    const { organizationId } = await api<{ organizationId: string }>(
-      `/api/invitations/${inv.id}/accept`,
-      { method: "POST" },
-    );
-    await goto(`/teams/${organizationId}`);
-  } catch (err) {
-    error = err instanceof ApiError ? err.message : "Could not accept the invitation.";
-    busyId = null;
+  function roleLabel(role: MemberRole): string {
+    return role.charAt(0).toUpperCase() + role.slice(1);
   }
-}
 
-async function decline(inv: Invitation) {
-  if (
-    !confirm(
-      `Decline the invitation to ${inv.organizationName ?? "this team"}?`,
-    )
-  )
-    return;
-  busyId = inv.id;
-  error = null;
-  try {
-    await api<{ ok: boolean }>(`/api/invitations/${inv.id}/decline`, {
-      method: "POST",
+  function formatDate(iso?: string): string {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return d.toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
     });
-    invitationsOverride = await api<Invitation[]>("/api/me/invitations");
-  } catch (err) {
-    error = err instanceof ApiError ? err.message : "Could not decline the invitation.";
-  } finally {
-    busyId = null;
   }
-}
+
+  async function accept(inv: Invitation) {
+    busyId = inv.id;
+    try {
+      const { organizationId } = await api<{ organizationId: string }>(
+        `/api/invitations/${inv.id}/accept`,
+        { method: "POST" },
+      );
+      await goto(`/teams/${organizationId}`);
+    } catch (err) {
+      toastError(err instanceof ApiError ? err.message : "Could not accept the invitation.");
+      busyId = null;
+    }
+  }
+
+  async function decline(inv: Invitation) {
+    const ok = await confirm({
+      title: "Decline invitation",
+      message: `Decline the invitation to ${inv.organizationName ?? "this team"}?`,
+      confirmLabel: "Decline",
+      tone: "default",
+    });
+    if (!ok) return;
+    busyId = inv.id;
+    try {
+      await api<{ ok: boolean }>(`/api/invitations/${inv.id}/decline`, {
+        method: "POST",
+      });
+      invitationsOverride = await api<Invitation[]>("/api/me/invitations");
+    } catch (err) {
+      toastError(err instanceof ApiError ? err.message : "Could not decline the invitation.");
+    } finally {
+      busyId = null;
+    }
+  }
 </script>
 
 <svelte:head>
@@ -77,15 +77,6 @@ async function decline(inv: Invitation) {
       Teams you have been invited to join. Accept to become a member, or decline to dismiss.
     </p>
   </header>
-
-  {#if error}
-    <p
-      role="alert"
-      class="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300"
-    >
-      {error}
-    </p>
-  {/if}
 
   {#if invitations.length === 0}
     <div

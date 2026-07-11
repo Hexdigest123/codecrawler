@@ -1,4 +1,4 @@
-import { boolean, index, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { boolean, index, integer, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 export const user = pgTable("user", {
   id: text("id").primaryKey(),
@@ -6,6 +6,14 @@ export const user = pgTable("user", {
   email: text("email").notNull(),
   emailVerified: boolean("email_verified").notNull().default(false),
   image: text("image"),
+  // Better Auth `twoFactor` plugin: tracks whether the user has enrolled in 2FA.
+  twoFactorEnabled: boolean("two_factor_enabled").default(false),
+  // Platform role: "admin" (full Admin dashboard access) or "user".
+  // The first user to sign up is promoted to "admin" automatically.
+  role: text("role").notNull().default("user"),
+  // Account gate driven by Admin → Signups settings.
+  // "active" can sign in; "pending" awaits admin approval; "denied" is blocked.
+  status: text("status").notNull().default("active"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()
@@ -132,21 +140,73 @@ export const invitation = pgTable(
   ],
 );
 
-export const sso = pgTable(
-  "sso",
+// Backs Better Auth's SSO plugin (`@better-auth/sso`), which stores each
+// registered SAML/OIDC IdP as a row here and mounts the handshake endpoints
+// under /api/auth/sso/*. Field names mirror the plugin's default schema so the
+// drizzle adapter resolves them without a `fields` remap.
+export const ssoProvider = pgTable(
+  "sso_provider",
   {
     id: text("id").primaryKey(),
-    organizationId: text("organization_id")
-      .notNull()
-      .references(() => organization.id, { onDelete: "cascade" }),
-    domain: text("domain"),
-    providerId: text("provider_id"),
-    config: jsonb("config"),
+    issuer: text("issuer").notNull(),
+    oidcConfig: jsonb("oidc_config"),
+    samlConfig: jsonb("saml_config"),
+    userId: text("user_id").references(() => user.id, { onDelete: "cascade" }),
+    providerId: text("provider_id").notNull().unique(),
+    organizationId: text("organization_id").references(() => organization.id, {
+      onDelete: "cascade",
+    }),
+    domain: text("domain").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow()
       .$onUpdate(() => new Date()),
   },
-  (table) => [index("sso_organizationId_idx").on(table.organizationId)],
+  (table) => [index("sso_provider_organizationId_idx").on(table.organizationId)],
+);
+
+// Better Auth `twoFactor` plugin. One row per user storing the TOTP secret and
+// backup codes (encrypted at rest by the plugin) plus lockout state. `verified`
+// flips to true after the user completes the enrollment challenge
+// (POST /api/me/2fa/verify). A user is 2FA-protected only when a row with
+// verified=true exists.
+export const twoFactor = pgTable(
+  "twoFactor",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    secret: text("secret").notNull(),
+    backupCodes: text("backup_codes").notNull(),
+    verified: boolean("verified").notNull().default(false),
+    failedVerificationCount: integer("failed_verification_count").notNull().default(0),
+    lockedUntil: timestamp("locked_until", { withTimezone: true }),
+  },
+  (table) => [index("twoFactor_userId_idx").on(table.userId)],
+);
+
+// Better Auth `passkey` plugin (WebAuthn). A user may register multiple
+// passkeys (laptop, phone, hardware key). `credentialID` uniquely identifies the
+// authenticator credential; counter defends against replay. Rows cascade with
+// the user account.
+export const passkey = pgTable(
+  "passkey",
+  {
+    id: text("id").primaryKey(),
+    name: text("name"),
+    publicKey: text("public_key").notNull(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    credentialID: text("credential_id").notNull(),
+    counter: integer("counter").notNull().default(0),
+    deviceType: text("device_type").notNull(),
+    backedUp: boolean("backed_up").notNull().default(false),
+    transports: text("transports"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    aaguid: text("aaguid"),
+  },
+  (table) => [index("passkey_userId_idx").on(table.userId)],
 );

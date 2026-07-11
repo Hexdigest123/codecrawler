@@ -3,8 +3,10 @@ import type { Severity } from "./constants";
 export type {
   BillingMode,
   CoverageStrategy,
+  DepthTier,
   GraphType,
   ProviderId,
+  ReviewAgentMode,
   ReviewNodeRole,
   Severity,
 } from "./constants";

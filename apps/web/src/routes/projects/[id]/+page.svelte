@@ -1,15 +1,18 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
+  import { untrack } from "svelte";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import GitPullRequest from "@lucide/svelte/icons/git-pull-request";
   import Loader from "@lucide/svelte/icons/loader-circle";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import { ApiError, api } from "$lib/api";
-  import type {
-    OpenPullRequest,
-    ProjectReviewListItem,
-    TriggerReviewResponse,
+  import {
+    DEPTH_TIERS,
+    type DepthTier,
+    type OpenPullRequest,
+    type ProjectReviewListItem,
+    type TriggerReviewResponse,
   } from "$lib/types";
   import type { PageProps } from "./$types";
 
@@ -41,6 +44,14 @@
   let reviewingNumber = $state<number | null>(null);
   let reviewError = $state<{ n: number; msg: string } | null>(null);
   let freeByokOnly = $state(false);
+  // Depth applied to manually-triggered reviews. Seeds from the team's
+  // defaultDepth so the team default applies — the user can still override it
+  // per review via the selector. untrack: seed from the load snapshot rather
+  // than tracking it reactively. Falls back to "quick" when no team default is
+  // set.
+  let triggerDepth = $state<DepthTier>(
+    untrack(() => (data.defaultDepth as DepthTier | null | undefined) ?? "quick"),
+  );
 
   async function refreshOpen() {
     loadingOpen = true;
@@ -65,7 +76,7 @@
     try {
       const trigger = await api<TriggerReviewResponse>(
         `/api/projects/${data.projectId}/pulls/${n}/review`,
-        { method: "POST", body: JSON.stringify({}) },
+        { method: "POST", body: JSON.stringify({ depth: triggerDepth }) },
       );
       await goto(`/reviews/${trigger.reviewId}`);
     } catch (err) {
@@ -144,6 +155,25 @@
         <p class="mt-1 text-xs text-neutral-500">
           Triggered reviews run the full LangGraph pipeline against the real PR diff.
         </p>
+      </div>
+      <div
+        class="flex items-center gap-1 rounded-md border border-neutral-300 p-0.5 text-xs dark:border-neutral-700"
+        role="group"
+        aria-label="Review depth"
+      >
+        <span class="px-1.5 text-neutral-500">Depth</span>
+        {#each DEPTH_TIERS as tier (tier)}
+          <button
+            type="button"
+            onclick={() => (triggerDepth = tier as DepthTier)}
+            aria-pressed={triggerDepth === tier}
+            class="rounded px-2 py-1 font-medium transition {triggerDepth === tier
+              ? "bg-brand-600 text-white"
+              : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"}"
+          >
+            {tier}
+          </button>
+        {/each}
       </div>
       <button
         type="button"
@@ -236,7 +266,7 @@
     </h2>
     {#if recentReviews.length === 0}
       <p class="mt-4 text-sm text-neutral-500">
-        No reviews yet for this project. Trigger one from the list above or via a {providerLabel} webhook.
+        No reviews yet for this project. Trigger one from the list above or by opening a pull request.
       </p>
     {:else}
       <ul class="mt-4 divide-y divide-neutral-200 dark:divide-neutral-800">

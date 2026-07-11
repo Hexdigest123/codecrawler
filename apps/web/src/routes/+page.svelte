@@ -10,6 +10,7 @@ import ShieldCheck from "@lucide/svelte/icons/shield-check";
 import Sparkles from "@lucide/svelte/icons/sparkles";
 import Workflow from "@lucide/svelte/icons/workflow";
 import Brand from "$lib/components/Brand.svelte";
+import Faq from "$lib/components/Faq.svelte";
 
 const metrics = [
   { value: "92%", label: "less manual review drag" },
@@ -42,6 +43,47 @@ const workflow = [
   },
 ];
 
+const plans = [
+  {
+    id: "free" as const,
+    name: "Free",
+    price: "€0",
+    tagline: "BYOK exclusively — bring your own API keys.",
+    byokOnly: true,
+    features: [
+      "Unlimited reviews via BYOK",
+      "3 teams",
+      "5 members / team",
+      "Whole-repo context & audit trail",
+    ],
+  },
+  {
+    id: "plus" as const,
+    name: "Plus",
+    price: "€29",
+    tagline: "Hosted review budget for busy teams.",
+    featured: true,
+    features: [
+      "50 hosted reviews / day",
+      "Hosted + BYOK",
+      "Unlimited teams",
+      "5 members / team",
+    ],
+  },
+  {
+    id: "pro" as const,
+    name: "Pro",
+    price: "€99",
+    tagline: "Unlimited hosted reviews & custom SSO.",
+    features: [
+      "Unlimited hosted reviews",
+      "Custom SSO",
+      "Any model weight",
+      "Unlimited teams & members",
+    ],
+  },
+];
+
 const faqs = [
   {
     question: "Does CodeCrawler replace human code review?",
@@ -52,6 +94,11 @@ const faqs = [
     question: "Can we use our own AI provider keys?",
     answer:
       "Yes. BYOK is a core workflow, so teams can control model spend, provider selection, and review volume.",
+  },
+  {
+    question: "Is the Free plan really free? How many reviews do I get?",
+    answer:
+      "Yes. The Free plan is exclusively usable via BYOK — you bring your own API keys and pay your provider directly. Because CodeCrawler doesn't meter BYOK reviews, you can run an unlimited number of code reviews on Free, up to 3 teams at a time. Hosted (metered) credits are only included on Plus and Pro.",
   },
 ];
 </script>
@@ -265,18 +312,77 @@ const faqs = [
     </div>
   </section>
 
+  <section id="pricing" class="py-20">
+    <div class="mb-12 max-w-2xl">
+      <p class="text-sm font-bold uppercase tracking-[0.24em] text-brand-600">Plans</p>
+      <h2 class="mt-3 text-4xl font-black tracking-tight text-neutral-950 sm:text-5xl dark:text-white">
+        Start free with BYOK. Scale up when you need hosted credits.
+      </h2>
+      <p class="mt-5 leading-7 text-neutral-600 dark:text-neutral-400">
+        The Free plan runs exclusively on your own API keys — connect a provider and review as many
+        pull requests as you want, across up to 3 teams. Upgrade to Plus or Pro when you want hosted
+        (metered) credits, more teams, and enterprise controls.
+      </p>
+    </div>
+
+    <div class="grid gap-5 lg:grid-cols-3">
+      {#each plans as plan (plan.id)}
+        <article
+          class="relative flex flex-col rounded-[2rem] border p-7 shadow-sm shadow-neutral-950/5 {plan.featured
+            ? "border-brand-500 bg-white ring-1 ring-brand-500 dark:border-brand-400 dark:bg-neutral-950 dark:ring-brand-400"
+            : "border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950"}"
+        >
+          {#if plan.featured}
+            <span class="absolute right-6 top-6 rounded-full bg-brand-600 px-2.5 py-0.5 text-xs font-semibold text-white">
+              Most popular
+            </span>
+          {/if}
+
+          <h3 class="text-xl font-black tracking-tight">{plan.name}</h3>
+          <p class="mt-3 text-4xl font-black tracking-tight">
+            {plan.price}
+            <span class="ml-1 text-sm font-normal text-neutral-500">/mo</span>
+          </p>
+          <p class="mt-3 text-sm leading-6 text-neutral-600 dark:text-neutral-400">{plan.tagline}</p>
+
+          {#if plan.byokOnly}
+            <p class="mt-4 rounded-xl bg-brand-50 px-3 py-2 text-xs font-medium text-brand-700 dark:bg-brand-950 dark:text-brand-300">
+              BYOK exclusively — no hosted credits. Reviews are unlimited and not metered by CodeCrawler.
+            </p>
+          {/if}
+
+          <ul class="mt-6 flex flex-1 flex-col gap-3 text-sm text-neutral-600 dark:text-neutral-400">
+            {#each plan.features as feature (feature)}
+              <li class="flex items-start gap-2">
+                <Check class="mt-0.5 size-4 shrink-0 text-brand-600" />
+                <span>{feature}</span>
+              </li>
+            {/each}
+          </ul>
+
+          <a
+            href="/sign-up"
+            class="mt-8 inline-flex items-center justify-center gap-2 rounded-full px-5 py-3 text-sm font-bold transition hover:-translate-y-0.5 {plan.featured
+              ? "bg-brand-600 text-white hover:bg-brand-500"
+              : "border border-neutral-300 bg-white text-neutral-900 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-white dark:hover:bg-neutral-800"}"
+          >
+            {plan.id === "free" ? "Start free" : `Choose ${plan.name}`}
+            <ArrowRight class="size-4" />
+          </a>
+        </article>
+      {/each}
+    </div>
+
+    <p class="mt-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
+      All plans include whole-repo context, audit trails, and team workflows. Prices exclude VAT.
+    </p>
+  </section>
+
   <section class="grid gap-8 border-t border-neutral-200 pt-16 lg:grid-cols-[0.8fr_1.2fr] dark:border-neutral-800">
     <div>
       <p class="text-sm font-bold uppercase tracking-[0.24em] text-brand-600">FAQ</p>
       <h2 class="mt-3 text-4xl font-black tracking-tight text-neutral-950 dark:text-white">Questions engineering leaders ask first.</h2>
     </div>
-    <div class="space-y-3">
-      {#each faqs as faq}
-        <details class="group rounded-3xl border border-neutral-200 bg-white p-5 shadow-sm shadow-neutral-950/5 dark:border-neutral-800 dark:bg-neutral-950">
-          <summary class="cursor-pointer list-none text-lg font-bold text-neutral-950 marker:hidden dark:text-white">{faq.question}</summary>
-          <p class="mt-3 leading-7 text-neutral-600 dark:text-neutral-400">{faq.answer}</p>
-        </details>
-      {/each}
-    </div>
+    <Faq {faqs} />
   </section>
 </div>

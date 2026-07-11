@@ -1,5 +1,6 @@
 import { api } from "$lib/api";
 import type {
+  AgentProfile,
   OpenPullRequestsResponse,
   Project,
   ProjectReviewsResponse,
@@ -34,11 +35,26 @@ export const load: PageLoad = async ({ params, fetch }) => {
     pulls = obj.pulls ?? [];
   }
 
+  // Pull the team's default review depth so the per-review selector seeds from
+  // the team setting: the team default applies unless the user overrides it
+  // for a single run. Best-effort — fall back to null (→ "quick" in the UI).
+  let defaultDepth: AgentProfile["defaultDepth"] = null;
+  if (project?.orgId) {
+    defaultDepth = await api<AgentProfile>(
+      `/api/teams/${project.orgId}/agent-profile`,
+      undefined,
+      fetch,
+    )
+      .then((p) => p.defaultDepth ?? null)
+      .catch(() => null);
+  }
+
   return {
     projectId: params.id,
     project,
     pulls,
     openPulls: openRes.items ?? [],
     recentReviews: reviewsRes.items ?? [],
+    defaultDepth,
   };
 };

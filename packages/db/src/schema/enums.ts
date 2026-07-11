@@ -28,6 +28,8 @@ export const coverageStrategyEnum = pgEnum("coverage_strategy", [
 
 export const billingModeEnum = pgEnum("billing_mode", ["hosted", "byok", "mixed"]);
 
+export const reviewDepthEnum = pgEnum("review_depth", ["static", "quick", "deep"]);
+
 export const reviewStatusEnum = pgEnum("review_status", [
   "pending",
   "queued",
@@ -51,4 +53,7 @@ export const apiKeyStatusEnum = pgEnum("api_key_status", ["valid", "invalid", "u
 
 export const vcsProviderEnum = pgEnum("vcs_provider", ["github", "gitlab", "gitea"]);
 
-export const vcsKindEnum = pgEnum("vcs_kind", ["oauth", "github_app"]);
+// VCS connections are now exclusively PAT/OAuth tokens. The legacy
+// "github_app" kind (GitHub App installation tokens) was removed when the
+// GitHub App implementation was dropped in favour of polling + PAT.
+export const vcsKindEnum = pgEnum("vcs_kind", ["oauth"]);

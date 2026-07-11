@@ -65,7 +65,7 @@
             metered
           </span>
         {/if}
-        {#if weight}
+        {#if weight && !data.byok}
           <span class="text-[11px] text-neutral-400">&times;{weight}</span>
         {/if}
       </div>

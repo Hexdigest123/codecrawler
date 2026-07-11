@@ -1,9 +1,15 @@
 <script lang="ts">
   import { ApiError, api } from "$lib/api";
+  import { confirm } from "$lib/confirm.svelte";
+  import { toastError, toastSuccess } from "$lib/toast.svelte";
   import type { PageProps } from "./$types";
   import type { VcsConnection } from "./+page";
 
   let { data }: PageProps = $props();
+
+  const isAdmin = $derived(
+    data.team?.role === "owner" || data.team?.role === "admin",
+  );
 
   const PROVIDERS = [
     { value: "github", label: "GitHub" },
@@ -33,8 +39,6 @@
 
   function kindLabel(kind: string | null | undefined): string {
     if (!kind) return "Token";
-    if (kind === "github_app") return "GitHub App";
-    if (kind === "oauth") return "OAuth";
     return kind;
   }
 
@@ -44,6 +48,13 @@
     return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
   }
 
+  function baseUrlLabel(provider: string): string | null {
+    if (provider === "gitlab" || provider === "gitea") {
+      return "Base URL";
+    }
+    return null;
+  }
+
   let connectionsOverride = $state<VcsConnection[] | null>(null);
   const connections = $derived<VcsConnection[]>(connectionsOverride ?? data.connections ?? []);
 
@@ -51,10 +62,12 @@
   let token = $state("");
   let baseUrl = $state("");
   let adding = $state(false);
-  let addError = $state<string | null>(null);
-  let success = $state<string | null>(null);
+  let busyConnectionId = $state<string | null>(null);
 
-  const showBaseUrl = $derived(provider === "gitea");
+  const showBaseUrl = $derived(provider === "gitlab" || provider === "gitea");
+  const baseUrlPlaceholder = $derived(
+    provider === "gitlab" ? "https://gitlab.example.com" : "https://gitea.example.com",
+  );
   const canSubmit = $derived(
     token.trim().length > 0 && (!showBaseUrl || baseUrl.trim().length > 0),
   );
@@ -68,8 +81,6 @@
   async function addConnection(event: SubmitEvent) {
     event.preventDefault();
     if (!canSubmit) return;
-    addError = null;
-    success = null;
     adding = true;
     try {
       const body: { token: string; orgId: string; baseUrl?: string } = {
@@ -83,12 +94,32 @@
       });
       token = "";
       baseUrl = "";
-      success = `${providerLabel(provider)} connection added.`;
+      toastSuccess(`${providerLabel(provider)} connection added.`);
       await refetchConnections();
     } catch (err) {
-      addError = err instanceof ApiError ? err.message : "Could not add connection.";
+      toastError(err instanceof ApiError ? err.message : "Could not add connection.");
     } finally {
       adding = false;
+    }
+  }
+
+  async function removeConnection(conn: VcsConnection) {
+    const ok = await confirm({
+      title: "Remove connection",
+      message: `Remove the ${providerLabel(conn.provider)} connection?`,
+      confirmLabel: "Remove",
+      tone: "danger",
+    });
+    if (!ok) return;
+    busyConnectionId = conn.id;
+    try {
+      await api(`/api/teams/${data.teamId}/vcs-connections/${conn.id}`, { method: "DELETE" });
+      await refetchConnections();
+      toastSuccess(`${providerLabel(conn.provider)} connection removed.`);
+    } catch (err) {
+      toastError(err instanceof ApiError ? err.message : "Could not remove connection.");
+    } finally {
+      busyConnectionId = null;
     }
   }
 </script>
@@ -102,73 +133,76 @@
     <h1 class="text-2xl font-semibold tracking-tight">VCS connections</h1>
     <p class="mt-1 max-w-2xl text-sm text-neutral-600 dark:text-neutral-400">
       Connect GitHub, GitLab, or Gitea so CodeCrawler can read pull/merge requests and post
-      reviews. Tokens are encrypted at rest and never displayed again after adding.
+      reviews. Tokens are encrypted at rest and never displayed again after adding. With a token
+      connected, completed reviews are posted back to the PR as a comment.
     </p>
   </header>
 
   <section class="rounded-xl border border-neutral-200 p-5 dark:border-neutral-800">
     <h2 class="text-sm font-semibold uppercase tracking-wide text-neutral-500">Add a connection</h2>
-    <form class="mt-4 flex flex-col gap-4" onsubmit={addConnection} novalidate>
-      <label class="flex max-w-xs flex-col gap-1 text-sm">
-        <span class="font-medium">Provider</span>
-        <select
-          bind:value={provider}
-          class="input px-3 py-2"
-        >
-          {#each PROVIDERS as p (p.value)}
-            <option value={p.value}>{p.label}</option>
-          {/each}
-        </select>
-      </label>
-
-      <label class="flex flex-col gap-1 text-sm">
-        <span class="font-medium">Access token</span>
-        <input
-          type="password"
-          required
-          autocomplete="off"
-          bind:value={token}
-          class="input px-3 py-2"
-          placeholder="paste token"
-        />
-      </label>
-
-      {#if showBaseUrl}
-        <label class="flex flex-col gap-1 text-sm">
-          <span class="font-medium">Base URL</span>
-          <input
-            type="url"
-            required
-            bind:value={baseUrl}
+    {#if isAdmin}
+      <form class="mt-4 flex flex-col gap-4" onsubmit={addConnection} novalidate>
+        <label class="flex max-w-xs flex-col gap-1 text-sm">
+          <span class="font-medium">Provider</span>
+          <select
+            bind:value={provider}
             class="input px-3 py-2"
-            placeholder="https://gitea.example.com"
-          />
-          <span class="text-xs text-neutral-500">The root URL of your self-hosted Gitea instance.</span>
+          >
+            {#each PROVIDERS as p (p.value)}
+              <option value={p.value}>{p.label}</option>
+            {/each}
+          </select>
         </label>
-      {/if}
 
-      <p class="max-w-2xl text-xs text-neutral-500">
-        GitHub connections normally use the GitHub App; for testing you can paste a personal access
-        token. GitLab/Gitea use a personal/team token.
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="font-medium">Access token</span>
+          <input
+            type="password"
+            required
+            autocomplete="off"
+            bind:value={token}
+            class="input px-3 py-2"
+            placeholder="paste token"
+          />
+        </label>
+
+        {#if showBaseUrl}
+          <label class="flex flex-col gap-1 text-sm">
+            <span class="font-medium">Base URL</span>
+            <input
+              type="url"
+              required
+              bind:value={baseUrl}
+              class="input px-3 py-2"
+              placeholder={baseUrlPlaceholder}
+            />
+            <span class="text-xs text-neutral-500">
+              The root URL of your self-hosted {providerLabel(provider)} instance. Leave empty for
+              {provider === "gitlab" ? " gitlab.com" : " the public host"}.
+            </span>
+          </label>
+        {/if}
+
+        <p class="max-w-2xl text-xs text-neutral-500">
+          Paste a personal access (PAT) or team token with read access to pull/merge requests. Reviews
+          are posted back to the PR as a comment using this token.
+        </p>
+
+        <div class="flex items-center gap-4">
+          <button
+            type="submit"
+            disabled={adding || !canSubmit}
+            class="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {adding ? "Connecting…" : "Add connection"}
+          </button>
+        </div>
+      </form>
+    {:else}
+      <p class="mt-4 text-sm text-neutral-600 dark:text-neutral-400">
+        Only team owners and admins can add or remove VCS connections.
       </p>
-
-      {#if addError}
-        <p role="alert" class="text-sm text-red-600 dark:text-red-400">{addError}</p>
-      {/if}
-      {#if success}
-        <p role="status" class="text-sm text-green-600 dark:text-green-400">{success}</p>
-      {/if}
-
-      <div class="flex items-center gap-4">
-        <button
-          type="submit"
-          disabled={adding || !canSubmit}
-          class="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {adding ? "Connecting…" : "Add connection"}
-        </button>
-      </div>
-    </form>
+    {/if}
   </section>
 
   <section class="rounded-xl border border-neutral-200 p-5 dark:border-neutral-800">
@@ -187,7 +221,19 @@
               </span>
               <span class="text-sm text-neutral-500">{kindLabel(conn.kind)}</span>
             </div>
-            <span class="text-xs text-neutral-500">Added {formatDate(conn.createdAt)}</span>
+            <div class="flex items-center gap-3">
+              <span class="text-xs text-neutral-500">Added {formatDate(conn.createdAt)}</span>
+              {#if isAdmin}
+                <button
+                  type="button"
+                  onclick={() => removeConnection(conn)}
+                  disabled={busyConnectionId === conn.id}
+                  class="rounded-md border border-red-300 px-3 py-1 text-sm font-medium text-red-600 bg-white hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:bg-neutral-900 dark:hover:bg-red-950"
+                >
+                  {busyConnectionId === conn.id ? "…" : "Remove"}
+                </button>
+              {/if}
+            </div>
           </li>
         {/each}
       </ul>

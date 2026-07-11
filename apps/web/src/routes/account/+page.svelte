@@ -1,20 +1,18 @@
 <script lang="ts">
+import KeyRound from "@lucide/svelte/icons/key-round";
 import { authClient } from "@codecrawler/auth/client";
 import { ApiError, api } from "$lib/api";
+import { toastError, toastSuccess } from "$lib/toast.svelte";
 import type { PageProps } from "./$types";
 
 let { data }: PageProps = $props();
 
 let newEmail = $state("");
 let emailBusy = $state(false);
-let emailMsg = $state<string | null>(null);
-let emailError = $state<string | null>(null);
 
 let currentPassword = $state("");
 let newPassword = $state("");
 let passwordBusy = $state(false);
-let passwordMsg = $state<string | null>(null);
-let passwordError = $state<string | null>(null);
 
 const emailDisabled = $derived(emailBusy || newEmail.trim().length === 0);
 const passwordDisabled = $derived(
@@ -25,18 +23,16 @@ async function changeEmail(event: SubmitEvent) {
   event.preventDefault();
   if (emailDisabled) return;
   emailBusy = true;
-  emailError = null;
-  emailMsg = null;
   try {
     await api<{ ok: boolean }>("/api/me/email", {
       method: "POST",
       body: JSON.stringify({ newEmail: newEmail.trim() }),
     });
-    emailMsg = `Verification sent to ${newEmail.trim()}. The change takes effect once confirmed.`;
+    toastSuccess(`Verification sent to ${newEmail.trim()}. The change takes effect once confirmed.`);
     newEmail = "";
     await authClient.getSession({ query: { disableCookieCache: true } });
   } catch (err) {
-    emailError = err instanceof ApiError ? err.message : "Could not change email.";
+    toastError(err instanceof ApiError ? err.message : "Could not change email.");
   } finally {
     emailBusy = false;
   }
@@ -46,18 +42,16 @@ async function changePassword(event: SubmitEvent) {
   event.preventDefault();
   if (passwordDisabled) return;
   passwordBusy = true;
-  passwordError = null;
-  passwordMsg = null;
   try {
     await api<{ ok: boolean }>("/api/me/password", {
       method: "POST",
       body: JSON.stringify({ currentPassword, newPassword }),
     });
-    passwordMsg = "Password updated.";
+    toastSuccess("Password updated.");
     currentPassword = "";
     newPassword = "";
   } catch (err) {
-    passwordError = err instanceof ApiError ? err.message : "Could not change password.";
+    toastError(err instanceof ApiError ? err.message : "Could not change password.");
   } finally {
     passwordBusy = false;
   }
@@ -80,6 +74,32 @@ function inputClass() {
     </p>
   </header>
 
+  <a
+    href="/account/security"
+    class="flex items-center justify-between rounded-xl border border-neutral-200 p-5 text-sm hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-900"
+  >
+    <span>
+      <span class="font-medium">Security</span>
+      <span class="mt-0.5 block text-xs text-neutral-500">
+        Two-factor authentication, passkeys, and account sign-in protection.
+      </span>
+    </span>
+    <KeyRound class="size-5 text-neutral-400" />
+  </a>
+
+  <a
+    href="/account/notifications"
+    class="flex items-center justify-between rounded-xl border border-neutral-200 p-5 text-sm hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-900"
+  >
+    <span>
+      <span class="font-medium">Notification preferences</span>
+      <span class="mt-0.5 block text-xs text-neutral-500">
+        Choose which emails you receive (reviews, teams, billing, integrations).
+      </span>
+    </span>
+    <span class="text-neutral-400">→</span>
+  </a>
+
   <section
     class="rounded-xl border border-neutral-200 p-5 dark:border-neutral-800"
     aria-label="Email address"
@@ -100,12 +120,6 @@ function inputClass() {
           class={inputClass()}
         />
       </label>
-      {#if emailMsg}
-        <p role="status" class="text-sm text-green-700 dark:text-green-300">{emailMsg}</p>
-      {/if}
-      {#if emailError}
-        <p role="alert" class="text-sm text-red-600 dark:text-red-400">{emailError}</p>
-      {/if}
       <button
         type="submit"
         disabled={emailDisabled}
@@ -144,12 +158,6 @@ function inputClass() {
           class={inputClass()}
         />
       </label>
-      {#if passwordMsg}
-        <p role="status" class="text-sm text-green-700 dark:text-green-300">{passwordMsg}</p>
-      {/if}
-      {#if passwordError}
-        <p role="alert" class="text-sm text-red-600 dark:text-red-400">{passwordError}</p>
-      {/if}
       <button
         type="submit"
         disabled={passwordDisabled}
